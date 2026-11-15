@@ -411,8 +411,8 @@ function renderStage(){
   var wrap=h("div",{class:"stagewrap"});
   root.appendChild(wrap);
 
-  if(!db||!user){
-    wrap.appendChild(h("div",{class:"card"},["Recursos ao vivo indisponíveis nesta visualização."]));
+  if(!sb){
+    wrap.appendChild(h("div",{class:"card"},["Configuração pendente: preencha SUPABASE_URL e SUPABASE_ANON_KEY no topo do index.html."]));
     return;
   }
 
