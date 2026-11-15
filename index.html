@@ -147,7 +147,68 @@ function h(tag, attrs, children){
 function text(node, str){ node.textContent=str; return node; }
 
 function normName(s){
-  return (s||"").trim().replace(/\s+/g," ").toLowerCase();
+  return (s||"").trim().replace(/\s+/g," ").toLowerCase()
+    .normalize("NFD").replace(/[̀-ͯ]/g,""); // ignora acentos também
+}
+
+// distância de edição (Levenshtein) — usada só para sugerir nomes parecidos,
+// nunca para decidir identidade de nó sozinha
+function levenshtein(a,b){
+  var m=a.length, n=b.length;
+  if(m===0) return n;
+  if(n===0) return m;
+  var prev=new Array(n+1);
+  for(var j=0;j<=n;j++) prev[j]=j;
+  for(var i=1;i<=m;i++){
+    var cur=[i];
+    for(var j2=1;j2<=n;j2++){
+      var cost = a[i-1]===b[j2-1]? 0:1;
+      cur[j2]=Math.min(prev[j2]+1, cur[j2-1]+1, prev[j2-1]+cost);
+    }
+    prev=cur;
+  }
+  return prev[n];
+}
+
+// heurística de "parecença" entre dois nomes já normalizados (sem acento/caixa):
+// prefixo de um no outro (ex. "jose" dentro de "jose silva"), mesmo primeiro
+// nome, ou poucos caracteres de diferença. Quanto menor o score, mais parecido.
+function nameCloseness(nA, nB){
+  if(!nA || !nB || nA===nB) return null;
+  if(nA.length>=2 && nB.length>=2 && (nA.indexOf(nB)===0 || nB.indexOf(nA)===0)) return 0;
+  var ta=nA.split(" "), tb=nB.split(" ");
+  if(ta[0]===tb[0] && ta[0].length>=3) return 1;
+  var d=levenshtein(nA,nB);
+  var maxLen=Math.max(nA.length,nB.length);
+  if(maxLen>=4 && d<=2) return 2+d;
+  return null;
+}
+
+// dado um nome digitado e uma lista de nomes (com a grafia original) já
+// conhecidos na oficina, devolve o mais parecido (grafia original) ou null
+function suggestSimilarName(raw, knownRaws){
+  var nTarget=normName(raw);
+  if(!nTarget) return null;
+  var best=null, bestScore=Infinity;
+  knownRaws.forEach(function(cand){
+    var score=nameCloseness(nTarget, normName(cand));
+    if(score!=null && score<bestScore){ bestScore=score; best=cand; }
+  });
+  return best;
+}
+
+// nomes já conhecidos nesta oficina (participantes + quem já foi citado em
+// laços), uma grafia por pessoa — usado para autocomplete e para a sugestão
+// "você quis dizer...?"
+function knownNames(){
+  var seen={}, out=[];
+  function add(nm){
+    var k=normName(nm||"");
+    if(k && !seen[k]){ seen[k]=1; out.push(nm.trim()); }
+  }
+  state.participants.forEach(function(p){ add(p.name); });
+  state.ties.forEach(function(t){ add(t.fromName); add(t.to); });
+  return out;
 }
 
 // ---------- graph + metrics ----------
@@ -408,14 +469,21 @@ function renderEntrar(code){
   var me=state.participants.find(function(p){return p.id===myId;});
 
   if(!me){
+    var known=knownNames();
     var card=h("div",{class:"card"});
     card.appendChild(h("label",{},["Seu nome"]));
-    var nameInput=h("input",{type:"text", placeholder:"Como você quer aparecer na rede"});
+    card.appendChild(h("datalist",{id:"ofNamesList"}, known.map(function(n){ return h("option",{value:n}); })));
+    var nameInput=h("input",{type:"text", placeholder:"Como você quer aparecer na rede", list:"ofNamesList"});
     card.appendChild(nameInput);
     card.appendChild(h("div",{style:"height:12px"}));
     var btn=h("button",{class:"btn", onclick:function(){
       var val=nameInput.value.trim();
       if(!val){ toast("Digite seu nome"); return; }
+      var suggestion=suggestSimilarName(val, known);
+      if(suggestion){
+        var useIt=confirm("Já existe \""+suggestion+"\" nesta oficina.\n\nÉ você?\n\nOK = sim, sou \""+suggestion+"\"\nCancelar = não, sou outra pessoa (\""+val+"\")");
+        if(useIt) val=suggestion;
+      }
       btn.disabled=true;
       sb.from("oficina_rede_participants").upsert({id:myId, name:val, session_id:currentSession.id}).then(function(res){
         if(res.error){ btn.disabled=false; toast("Não foi possível entrar: "+res.error.message); return; }
@@ -447,7 +515,8 @@ function renderEntrar(code){
     formCard.appendChild(h("p",{class:"muted",style:"margin-bottom:10px"},["Pense em alguém de outro grupo da rede. O que poderia circular entre vocês? Esse laço entra como hipótese."]));
   }
   formCard.appendChild(h("label",{},["Nome da pessoa"]));
-  var toInput=h("input",{type:"text", placeholder:"Com quem você trabalha / trabalharia?"});
+  formCard.appendChild(h("datalist",{id:"ofNamesList"}, knownNames().map(function(n){ return h("option",{value:n}); })));
+  var toInput=h("input",{type:"text", placeholder:"Com quem você trabalha / trabalharia?", list:"ofNamesList"});
   formCard.appendChild(toInput);
   formCard.appendChild(h("div",{style:"height:10px"}));
   formCard.appendChild(h("label",{},["Essa pessoa está..."]));
@@ -463,6 +532,11 @@ function renderEntrar(code){
     var val=toInput.value.trim();
     if(!val){ toast("Digite um nome"); return; }
     if(normName(val)===normName(me.name)){ toast("Escolha outra pessoa"); return; }
+    var suggestion=suggestSimilarName(val, knownNames());
+    if(suggestion && normName(suggestion)!==normName(me.name)){
+      var useIt=confirm("Já existe \""+suggestion+"\" nesta oficina.\n\nÉ essa pessoa?\n\nOK = sim, usar \""+suggestion+"\"\nCancelar = não, é outra pessoa (\""+val+"\")");
+      if(useIt) val=suggestion;
+    }
     submitBtn.disabled=true;
     sb.from("oficina_rede_ties").insert({
       from_id: myId, from_name: me.name, to_name: val,
@@ -729,6 +803,38 @@ function renderStage(code){
         h("span",{class:"muted"},[r[0]]), h("span",{style:"font-weight:600;text-align:right"},[r[1]])
       ]));
     });
+
+    if(isAdmin){
+      nodeInfoBox.appendChild(h("div",{style:"height:10px"}));
+      nodeInfoBox.appendChild(h("label",{},["Mesclar com (mesma pessoa, nome diferente)"]));
+      var otherLabels=Object.keys(g.nodes).filter(function(k2){return k2!==key;}).map(function(k2){ return g.nodes[k2].label; });
+      nodeInfoBox.appendChild(h("datalist",{id:"mergeNamesList"}, otherLabels.map(function(n){ return h("option",{value:n}); })));
+      var mergeInput=h("input",{type:"text", placeholder:"nome do outro nó", list:"mergeNamesList"});
+      nodeInfoBox.appendChild(mergeInput);
+      nodeInfoBox.appendChild(h("div",{style:"height:8px"}));
+      var mergeBtn=h("button",{class:"btn secondary", onclick:function(){
+        var typed=mergeInput.value.trim();
+        if(!typed){ toast("Digite ou escolha o nome do outro nó"); return; }
+        var targetKey=null;
+        Object.keys(g.nodes).forEach(function(k2){
+          if(k2!==key && normName(g.nodes[k2].label)===normName(typed)) targetKey=k2;
+        });
+        if(!targetKey){ toast("Pessoa não encontrada entre os nós atuais — escolha uma da lista."); return; }
+        var targetLabel=g.nodes[targetKey].label;
+        if(!confirm("Mesclar \""+d.label+"\" dentro de \""+targetLabel+"\"? Isso reescreve todos os registros para um nome só e não pode ser desfeito.")) return;
+        mergeBtn.disabled=true;
+        mergeNodes(key, targetLabel).then(function(){
+          mergeBtn.disabled=false;
+          toast("Nós mesclados.");
+          renderNodeInfo(null);
+          loadAll();
+        }).catch(function(e){
+          mergeBtn.disabled=false;
+          toast("Erro ao mesclar: "+(e&&e.message? e.message : e));
+        });
+      }},["Mesclar nós"]);
+      nodeInfoBox.appendChild(mergeBtn);
+    }
   }
   renderNodeInfo(null);
   side.appendChild(nodeInfoBox);
@@ -925,6 +1031,29 @@ function localId(code){
     localStorage.setItem(k,v);
   }
   return v;
+}
+
+// reescreve participante(s) e laços cujo nome normaliza para sourceKey, usando
+// canonicalLabel como grafia final — assim os dois nós viram um só no grafo
+function mergeNodes(sourceKey, canonicalLabel){
+  var ops=[];
+  state.participants.forEach(function(p){
+    if(normName(p.name)===sourceKey && p.name!==canonicalLabel){
+      ops.push(sb.from("oficina_rede_participants").update({name:canonicalLabel}).eq("id",p.id));
+    }
+  });
+  state.ties.forEach(function(t){
+    if(normName(t.fromName)===sourceKey && t.fromName!==canonicalLabel){
+      ops.push(sb.from("oficina_rede_ties").update({from_name:canonicalLabel}).eq("id",t.id));
+    }
+    if(normName(t.to)===sourceKey && t.to!==canonicalLabel){
+      ops.push(sb.from("oficina_rede_ties").update({to_name:canonicalLabel}).eq("id",t.id));
+    }
+  });
+  return Promise.all(ops).then(function(results){
+    var err=results.find(function(r){ return r && r.error; });
+    if(err) throw err.error;
+  });
 }
 
 async function loadAll(){
