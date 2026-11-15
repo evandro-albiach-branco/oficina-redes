@@ -118,11 +118,14 @@ function parseHash(){
   return {view:m[1], code:m[2]? m[2].trim().toUpperCase() : null};
 }
 
-function genSessionCode(){
-  var chars="ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // sem O/0/I/1 para evitar confusão
-  var out="";
-  for(var i=0;i<6;i++) out+=chars[Math.floor(Math.random()*chars.length)];
-  return out;
+// transforma um nome digitado (com acentos/espaços/pontuação) no código da
+// oficina: maiúsculas, sem acento, só letras/números, palavras separadas por
+// hífen — assim o código é o próprio nome, fácil de falar e digitar em grupo
+function slugifyCode(s){
+  s=(s||"").normalize("NFD").replace(/[̀-ͯ]/g,"");
+  s=s.toUpperCase().trim().replace(/[^A-Z0-9]+/g,"-").replace(/^-+|-+$/g,"");
+  if(s.length>40) s=s.slice(0,40).replace(/-+$/,"");
+  return s;
 }
 
 function h(tag, attrs, children){
@@ -381,15 +384,15 @@ function renderEntrar(code){
     wrap.appendChild(h("h1",{style:"font-size:30px;margin:14px 0 6px"},["Oficina Rede"]));
     wrap.appendChild(h("p",{class:"muted"},["Ciência das Redes para Fortalecer a Educação Ambiental"]));
     var codeCard=h("div",{class:"card"});
-    codeCard.appendChild(h("label",{},["Código da oficina"]));
-    var codeInput=h("input",{type:"text", placeholder:"ex: AB3X7K", style:"text-transform:uppercase"});
+    codeCard.appendChild(h("label",{},["Nome da oficina"]));
+    var codeInput=h("input",{type:"text", placeholder:"ex: Rebea manhã"});
     codeCard.appendChild(codeInput);
     codeCard.appendChild(h("div",{style:"height:10px"}));
-    codeCard.appendChild(h("p",{class:"muted"},["Peça o código ao facilitador — ele aparece na tela do palco, junto com o QR code."]));
+    codeCard.appendChild(h("p",{class:"muted"},["Peça ao facilitador o nome da oficina — ele aparece na tela do palco, junto com o QR code."]));
     codeCard.appendChild(h("div",{style:"height:4px"}));
     var goBtn=h("button",{class:"btn", onclick:function(){
-      var v=codeInput.value.trim().toUpperCase();
-      if(!v){ toast("Digite o código da oficina"); return; }
+      var v=slugifyCode(codeInput.value);
+      if(!v){ toast("Digite o nome da oficina"); return; }
       location.hash="#entrar-"+v;
     }},["Entrar"]);
     codeCard.appendChild(goBtn);
@@ -517,6 +520,31 @@ function renderLoginCard(){
 }
 
 // tela sem código: escolher uma oficina existente ou criar uma nova (só facilitador)
+// apaga uma oficina inteira (dados + a própria sessão); afterDelete(err) é chamado
+// ao final para quem precisar reagir (ex.: voltar para a lista de oficinas)
+function deleteSession(s, triggerBtn, afterDelete){
+  if(!confirm("Excluir a oficina \""+(s.name||s.code)+"\" e todos os seus dados (participantes e laços)? Isso não pode ser desfeito.")) return;
+  if(triggerBtn) triggerBtn.disabled=true;
+  Promise.all([
+    sb.from("oficina_rede_ties").delete().eq("session_id", s.id),
+    sb.from("oficina_rede_participants").delete().eq("session_id", s.id)
+  ]).then(function(results){
+    var err=results.find(function(r){return r.error;});
+    if(err) return {error:err.error};
+    return sb.from("oficina_rede_sessions").delete().eq("id", s.id);
+  }).then(function(res){
+    if(triggerBtn) triggerBtn.disabled=false;
+    if(res.error){ toast("Erro ao excluir: "+res.error.message); if(afterDelete) afterDelete(res.error); return; }
+    toast("Oficina excluída.");
+    sessionsListLoaded=false;
+    if(currentSession && currentSession.id===s.id){
+      if(sessionChannel){ sb.removeChannel(sessionChannel); sessionChannel=null; }
+      currentSession=null;
+    }
+    if(afterDelete) afterDelete(null); else render();
+  });
+}
+
 function renderSessionPicker(wrap){
   var titleRow=h("div",{style:"display:flex;justify-content:space-between;align-items:center"},[
     h("h1",{style:"font-size:32px"},["Oficinas"])
@@ -551,13 +579,19 @@ function renderSessionPicker(wrap){
   } else {
     var phaseLabel={coleta:"Coleta",exercicio:"Exercício",encerrado:"Encerrada"};
     sessionsList.forEach(function(s){
-      var row=h("a",{href:"#palco-"+s.code, style:"display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.07);text-decoration:none;color:var(--ink)"},[
+      var row=h("div",{style:"display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.07)"});
+      row.appendChild(h("a",{href:"#palco-"+s.code, style:"flex:1;display:flex;justify-content:space-between;align-items:center;gap:10px;text-decoration:none;color:var(--ink)"},[
         h("div",{},[
           h("div",{style:"font-weight:600"},[s.name||s.code]),
           h("div",{class:"tie-meta"},["Código: "+s.code])
         ]),
         h("span",{class:"tag ext"},[phaseLabel[s.phase]||s.phase])
-      ]);
+      ]));
+      var delBtn=h("button",{class:"btn danger", style:"width:auto;padding:8px 12px;font-size:12px;flex:none", onclick:function(ev){
+        ev.preventDefault(); ev.stopPropagation();
+        deleteSession(s, delBtn);
+      }},["Excluir"]);
+      row.appendChild(delBtn);
       listCard.appendChild(row);
     });
   }
@@ -565,16 +599,24 @@ function renderSessionPicker(wrap){
 
   var newCard=h("div",{class:"card"});
   newCard.appendChild(h("h3",{style:"font-size:15px;margin-bottom:10px"},["Nova oficina"]));
-  newCard.appendChild(h("label",{},["Nome (opcional)"]));
+  newCard.appendChild(h("label",{},["Nome da oficina"]));
   var nameInput=h("input",{type:"text", placeholder:"ex: Rebea — turma de manhã"});
   newCard.appendChild(nameInput);
-  newCard.appendChild(h("div",{style:"height:10px"}));
+  newCard.appendChild(h("div",{style:"height:6px"}));
+  newCard.appendChild(h("p",{class:"muted", style:"font-size:12px"},["O nome vira o código de entrada — escolha algo curto e fácil de falar em grupo."]));
+  newCard.appendChild(h("div",{style:"height:6px"}));
   var createBtn=h("button",{class:"btn", onclick:function(){
+    var rawName=nameInput.value.trim();
+    var code=slugifyCode(rawName);
+    if(!code){ toast("Digite um nome com letras ou números"); return; }
     createBtn.disabled=true;
-    var code=genSessionCode();
-    sb.from("oficina_rede_sessions").insert({code:code, name:nameInput.value.trim()||null, phase:"coleta"}).then(function(res){
+    sb.from("oficina_rede_sessions").insert({code:code, name:rawName, phase:"coleta"}).then(function(res){
       createBtn.disabled=false;
-      if(res.error){ toast("Erro ao criar oficina: "+res.error.message); return; }
+      if(res.error){
+        if(res.error.code==="23505") toast("Já existe uma oficina com esse nome (código \""+code+"\"). Escolha outro nome.");
+        else toast("Erro ao criar oficina: "+res.error.message);
+        return;
+      }
       location.hash="#palco-"+code;
     });
   }},["Criar oficina"]);
@@ -735,6 +777,17 @@ function renderStage(code){
     }},["Zerar dados (teste)"]);
     row.appendChild(exportBtn); row.appendChild(resetBtn);
     admin.appendChild(row);
+    admin.appendChild(h("div",{style:"height:8px"}));
+    var deleteSessionBtn=h("button",{class:"btn danger", onclick:function(){
+      deleteSession(currentSession, deleteSessionBtn, function(err){
+        if(!err){
+          if(sessionChannel){ sb.removeChannel(sessionChannel); sessionChannel=null; }
+          currentSession=null;
+          location.hash="#palco";
+        }
+      });
+    }},["Excluir esta oficina"]);
+    admin.appendChild(deleteSessionBtn);
     side.appendChild(admin);
   }
 
