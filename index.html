@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Oficina Rede — MonitoraEA</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<style>
+  :root{
+    --night:#0B2A45; --deep:#030a16; --ink:#fff; --ink-soft:#B9CBDD;
+    --mint:#5FE0C6; --mint2:#9BF3DC; --amber:#FFC24D; --dim:#3f6f86;
+    --display:"Anton",system-ui,sans-serif; --body:"Poppins",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--deep);color:var(--ink);font-family:var(--body);-webkit-font-smoothing:antialiased}
+  body{
+    background:
+      radial-gradient(60% 50% at 82% 10%, rgba(139,108,240,.16), transparent 60%),
+      radial-gradient(55% 55% at 6% 94%, rgba(255,194,77,.08), transparent 60%),
+      radial-gradient(120% 95% at 70% 10%, #113d61 0%, #0B2A45 38%, #061a30 72%, #030a16 100%);
+    min-height:100vh;
+  }
+  #root{min-height:100vh; display:flex; flex-direction:column}
+  a{color:var(--mint2)}
+  .brand{font-weight:700; letter-spacing:.2em; font-size:11px; color:var(--ink-soft); text-transform:uppercase; padding:18px 20px 0}
+  .brand .ea{color:var(--mint)}
+  h1,h2,h3{font-family:var(--display); font-weight:400; text-transform:uppercase; letter-spacing:.01em; margin:0}
+  .wrap{max-width:480px; margin:0 auto; padding:16px 20px 60px; width:100%; flex:1}
+  .stagewrap{max-width:1400px; margin:0 auto; padding:18px 28px 28px; width:100%; flex:1}
+  .card{background:rgba(255,255,255,.04); border:1px solid rgba(146,235,208,.14); border-radius:16px; padding:20px; margin-top:16px}
+  .btn{display:inline-flex; align-items:center; justify-content:center; gap:8px; border:none; border-radius:10px;
+    padding:13px 18px; font-family:var(--body); font-weight:600; font-size:15px; cursor:pointer; width:100%;
+    background:var(--mint); color:#04231c; transition:transform .15s, opacity .15s}
+  .btn:active{transform:scale(.98)}
+  .btn.secondary{background:rgba(255,255,255,.08); color:var(--ink); border:1px solid rgba(146,235,208,.25)}
+  .btn.ghost{background:transparent; color:var(--ink-soft); border:1px solid rgba(146,235,208,.2)}
+  .btn.amber{background:var(--amber); color:#3a2500}
+  .btn.danger{background:transparent; color:#ff9b9b; border:1px solid rgba(255,120,120,.4)}
+  .btn[disabled]{opacity:.4; cursor:not-allowed}
+  input[type=text]{width:100%; padding:13px 14px; border-radius:10px; border:1px solid rgba(146,235,208,.25);
+    background:rgba(255,255,255,.06); color:var(--ink); font-family:var(--body); font-size:15px; outline:none}
+  input[type=text]:focus{border-color:var(--mint)}
+  label{font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-soft); font-weight:600; display:block; margin-bottom:6px}
+  .row{display:flex; gap:10px}
+  .seg{display:flex; border:1px solid rgba(146,235,208,.25); border-radius:10px; overflow:hidden}
+  .seg button{flex:1; padding:11px 8px; background:transparent; color:var(--ink-soft); border:none; font-family:var(--body); font-weight:600; font-size:13px; cursor:pointer}
+  .seg button.active{background:var(--mint); color:#04231c}
+  .tie-item{display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid rgba(255,255,255,.07)}
+  .tie-item:last-child{border-bottom:none}
+  .tie-meta{font-size:13px; color:var(--ink-soft)}
+  .tag{font-size:10px; padding:2px 8px; border-radius:20px; font-weight:700; letter-spacing:.06em; text-transform:uppercase}
+  .tag.ext{background:rgba(185,203,221,.15); color:var(--ink-soft)}
+  .tag.hyp{background:rgba(255,194,77,.15); color:var(--amber)}
+  .phase-banner{font-size:13px; font-weight:600; padding:10px 14px; border-radius:10px; margin-bottom:4px; letter-spacing:.02em}
+  .phase-banner.coleta{background:rgba(95,224,198,.12); color:var(--mint2); border:1px solid rgba(95,224,198,.3)}
+  .phase-banner.exercicio{background:rgba(255,194,77,.12); color:var(--amber); border:1px solid rgba(255,194,77,.3)}
+  .phase-banner.encerrado{background:rgba(185,203,221,.1); color:var(--ink-soft); border:1px solid rgba(185,203,221,.2)}
+  .muted{color:var(--ink-soft); font-size:14px; line-height:1.5}
+  .center{text-align:center}
+  .stage-grid{display:grid; grid-template-columns:1fr 340px; gap:22px; align-items:start}
+  @media (max-width:980px){.stage-grid{grid-template-columns:1fr}}
+  .graph-box{background:rgba(255,255,255,.03); border:1px solid rgba(146,235,208,.14); border-radius:18px; overflow:hidden; position:relative; height:min(72vh,780px)}
+  .graph-hint{position:absolute; bottom:10px; left:14px; font-size:11px; color:var(--ink-soft); opacity:.55; pointer-events:none}
+  .metrics{display:grid; grid-template-columns:1fr 1fr; gap:10px}
+  .metric{background:rgba(255,255,255,.04); border:1px solid rgba(146,235,208,.14); border-radius:12px; padding:12px}
+  .metric .k{font-size:10.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-soft)}
+  .metric .v{font-family:var(--display); font-size:26px; margin-top:2px}
+  .metric .hint{font-size:11px; color:var(--ink-soft); opacity:.75; margin-top:4px; line-height:1.3}
+  .metric.wide{grid-column:1 / -1}
+  .join-pill{display:flex; align-items:center; gap:14px}
+  #qr{background:#fff; padding:10px; border-radius:10px; width:124px; height:124px; flex:none}
+  .urltext{font-size:13px; word-break:break-all; color:var(--mint2); font-weight:600}
+  .legend{display:flex; gap:16px; font-size:12px; color:var(--ink-soft); flex-wrap:wrap; margin-top:10px}
+  .legend span{display:inline-flex; align-items:center; gap:6px}
+  .dot{width:9px;height:9px;border-radius:50%;display:inline-block}
+  .lineSwatch{width:18px;height:0;border-top:2px solid; display:inline-block}
+  .toast{position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:#0f3550; color:#fff; padding:10px 18px;
+    border-radius:30px; font-size:14px; box-shadow:0 10px 30px rgba(0,0,0,.4); z-index:50; border:1px solid rgba(146,235,208,.3)}
+  .top-nav{display:flex; justify-content:space-between; align-items:center; padding:0 0 2px}
+  .small-link{font-size:12px; color:var(--ink-soft); text-decoration:none}
+</style>
+</head>
+<body>
+<div id="root"><div class="wrap center" style="padding-top:40vh"><span class="muted">Carregando…</span></div></div>
+<script>
+"use strict";
+(function(){
+
+// Preencha estas duas linhas com os valores do seu projeto Supabase
+// (Project Settings -> API -> Project URL / anon public key).
+var SUPABASE_URL = "https://covcbvhrihsstozlnrqp.supabase.co";
+var SUPABASE_ANON_KEY = "sb_publishable_hGbwDVlICflZXlIFYKiQVA_qb6zPauK";
+
+var sb=null, myId=null, isAdmin=false;
+var state={
+  phase:"coleta",
+  participants:[], // {id, name}
+  ties:[],         // {id, from, fromName, to, external, hypothetical, createdAt}
+  loaded:false
+};
+var unsub=[];
+
+function h(tag, attrs, children){
+  var el=document.createElement(tag);
+  attrs=attrs||{};
+  for(var k in attrs){
+    if(k==="html"){ el.innerHTML=attrs[k]; }
+    else if(k.indexOf("on")===0){ el.addEventListener(k.slice(2), attrs[k]); }
+    else if(k==="class"){ el.className=attrs[k]; }
+    else { el.setAttribute(k, attrs[k]); }
+  }
+  (children||[]).forEach(function(c){
+    if(c==null) return;
+    if(typeof c==="string"){ el.appendChild(document.createTextNode(c)); }
+    else el.appendChild(c);
+  });
+  return el;
+}
+function text(node, str){ node.textContent=str; return node; }
+
+function normName(s){
+  return (s||"").trim().replace(/\s+/g," ").toLowerCase();
+}
+
+// ---------- graph + metrics ----------
+function buildGraph(){
+  var nodes={}; // key -> {key,label,inRoom,degree}
+  var edgeMap={}; // "a|b" sorted -> {a,b,real,hyp}
+  function ensure(label){
+    var k=normName(label);
+    if(!k) return null;
+    if(!nodes[k]) nodes[k]={key:k,label:label.trim(),inRoom:false,degree:0};
+    return k;
+  }
+  state.participants.forEach(function(p){
+    var k=ensure(p.name);
+    if(k) nodes[k].inRoom=true;
+  });
+  state.ties.forEach(function(t){
+    var a=ensure(t.fromName||"");
+    var b=ensure(t.to||"");
+    if(!a||!b||a===b) return;
+    if(!t.external){ /* target claimed to be in room; still don't force inRoom flag from a guess */ }
+    var pairKey = a<b ? a+"|"+b : b+"|"+a;
+    if(!edgeMap[pairKey]) edgeMap[pairKey]={a:a,b:b,real:false,hyp:false};
+    if(t.hypothetical) edgeMap[pairKey].hyp=true; else edgeMap[pairKey].real=true;
+  });
+  var edges=Object.keys(edgeMap).map(function(k){ return edgeMap[k]; });
+  // degree counted on real edges only (structural reading)
+  edges.forEach(function(e){
+    if(e.real){ nodes[e.a].degree++; nodes[e.b].degree++; }
+  });
+  return {nodes:nodes, edges:edges};
+}
+
+function computeMetrics(g){
+  var keys=Object.keys(g.nodes);
+  var n=keys.length;
+  var realEdges=g.edges.filter(function(e){return e.real;});
+  var m=realEdges.length;
+  var idx={}; keys.forEach(function(k,i){idx[k]=i;});
+  // each adjacency entry carries the neighbor index and the pair-key of the edge used,
+  // so the bridge search below can identify *which* edge is critical, not just count them
+  var adj=keys.map(function(){return [];});
+  realEdges.forEach(function(e){
+    var pk = e.a<e.b ? e.a+"|"+e.b : e.b+"|"+e.a;
+    adj[idx[e.a]].push({to:idx[e.b], pk:pk});
+    adj[idx[e.b]].push({to:idx[e.a], pk:pk});
+  });
+  // components (union-find via BFS)
+  var comp=new Array(n).fill(-1);
+  var compSizes=[];
+  for(var i=0;i<n;i++){
+    if(comp[i]!==-1) continue;
+    var c=compSizes.length, q=[i]; comp[i]=c; var size=0;
+    while(q.length){
+      var u=q.pop(); size++;
+      adj[u].forEach(function(edge){ if(comp[edge.to]===-1){comp[edge.to]=c; q.push(edge.to);} });
+    }
+    compSizes.push(size);
+  }
+  var blocks=compSizes.length || 0;
+  var giantSize=compSizes.length? Math.max.apply(null,compSizes):0;
+  var giantIdx=compSizes.indexOf(giantSize);
+  var nodeComponent={}; keys.forEach(function(k,i){ nodeComponent[k]=comp[i]; });
+
+  // density (simple undirected graph)
+  var density = n>1 ? (2*m)/(n*(n-1)) : 0;
+
+  // average distance within giant component (BFS from each node there)
+  var giantNodes=[]; for(var j=0;j<n;j++) if(comp[j]===giantIdx) giantNodes.push(j);
+  var totalDist=0, pairs=0;
+  giantNodes.forEach(function(s){
+    var dist=new Array(n).fill(-1); dist[s]=0; var q=[s], qi=0;
+    while(qi<q.length){
+      var u=q[qi++];
+      adj[u].forEach(function(edge){ if(dist[edge.to]===-1){ dist[edge.to]=dist[u]+1; q.push(edge.to);} });
+    }
+    giantNodes.forEach(function(t){ if(t>s && dist[t]>0){ totalDist+=dist[t]; pairs++; } });
+  });
+  var avgDist = pairs>0 ? totalDist/pairs : 0;
+
+  // bridges (critical ties) via DFS low-link, only within edges with real=true
+  // bridgeEdges maps the edge's pair-key -> true, so a specific node can later ask
+  // "how many of my own edges are critical ties" instead of only a global count
+  var bridgeEdges={};
+  var disc=new Array(n).fill(-1), low=new Array(n).fill(-1);
+  var timer=0;
+  function dfs(u,parentPk){
+    disc[u]=low[u]=timer++;
+    adj[u].forEach(function(edge){
+      var v=edge.to;
+      if(edge.pk===parentPk) return; // don't walk straight back along the edge we arrived on
+      if(disc[v]===-1){
+        dfs(v,edge.pk);
+        low[u]=Math.min(low[u],low[v]);
+        if(low[v]>disc[u]) bridgeEdges[edge.pk]=true;
+      } else {
+        low[u]=Math.min(low[u],disc[v]);
+      }
+    });
+  }
+  for(var s2=0;s2<n;s2++) if(disc[s2]===-1) dfs(s2,null);
+  var bridgeCount=Object.keys(bridgeEdges).length;
+
+  // degree centralization (Freeman), on real-degree
+  var maxDeg=0; keys.forEach(function(k){ if(g.nodes[k].degree>maxDeg) maxDeg=g.nodes[k].degree; });
+  var sumDiff=0; keys.forEach(function(k){ sumDiff += (maxDeg-g.nodes[k].degree); });
+  var denom=(n-1)*(n-2);
+  var centralization = denom>0 ? sumDiff/denom : 0;
+  if(centralization>1) centralization=1;
+
+  return {
+    n:n, m:m, blocks:blocks, giantSize:giantSize,
+    density:density, avgDist:avgDist, bridges:bridgeCount,
+    centralization:centralization,
+    hypCount: g.edges.filter(function(e){return e.hyp;}).length,
+    nodeComponent:nodeComponent, componentSizes:compSizes, giantIdx:giantIdx, bridgeEdges:bridgeEdges
+  };
+}
+
+function pairKey(a,b){ return a<b ? a+"|"+b : b+"|"+a; }
+
+// per-node detail shown in the stage side panel when a node in the graph is clicked
+function nodeDetails(key, g, metrics){
+  var node=g.nodes[key];
+  if(!node) return null;
+  var hypDeg=0, bridgeDeg=0;
+  g.edges.forEach(function(e){
+    if(e.a!==key && e.b!==key) return;
+    if(e.hyp) hypDeg++;
+    if(e.real && metrics.bridgeEdges[pairKey(e.a,e.b)]) bridgeDeg++;
+  });
+  var compIdx = metrics.nodeComponent[key];
+  var compSize = (compIdx!=null) ? metrics.componentSizes[compIdx] : null;
+  var externalCount=0;
+  state.ties.forEach(function(t){
+    if(t.external && normName(t.fromName||"")===key) externalCount++;
+  });
+  return {
+    label:node.label, inRoom:node.inRoom, degree:node.degree,
+    hypDeg:hypDeg, bridgeDeg:bridgeDeg, compSize:compSize,
+    isGiant: compIdx===metrics.giantIdx, externalCount:externalCount
+  };
+}
+
+// ---------- rendering ----------
+var root=document.getElementById("root");
+
+function render(){
+  root.innerHTML="";
+  var hash=(location.hash||"").replace("#","");
+  if(hash==="palco") renderStage();
+  else renderEntrar();
+}
+window.addEventListener("hashchange", render);
+
+function brandBar(){
+  return h("div",{class:"brand"},["MONITORA", h("span",{class:"ea"},["EA"]), " · OFICINA REDE"]);
+}
+
+function phaseBanner(){
+  var map={coleta:"Fase: coleta de laços reais", exercicio:"Fase: exercício — laços hipotéticos", encerrado:"Oficina encerrada — obrigado!"};
+  return h("div",{class:"phase-banner "+state.phase},[map[state.phase]||""]);
+}
+
+function toast(msg){
+  var t=h("div",{class:"toast"},[msg]);
+  document.body.appendChild(t);
+  setTimeout(function(){ t.remove(); }, 2200);
+}
+
+// ---- participant (join) view ----
+function renderEntrar(){
+  root.appendChild(brandBar());
+  var wrap=h("div",{class:"wrap"});
+  root.appendChild(wrap);
+
+  if(!sb){
+    wrap.appendChild(h("div",{class:"card"},[
+      h("h3",{},["Configuração pendente"]),
+      h("p",{class:"muted"},["Este sistema ainda não foi conectado ao banco de dados. Preencha SUPABASE_URL e SUPABASE_ANON_KEY no topo do index.html."])
+    ]));
+    return;
+  }
+
+  wrap.appendChild(h("h1",{style:"font-size:30px;margin:14px 0 6px"},["Oficina Rede"]));
+  wrap.appendChild(h("p",{class:"muted"},["Ciência das Redes para Fortalecer a Educação Ambiental"]));
+  wrap.appendChild(phaseBanner());
+
+  var me=state.participants.find(function(p){return p.id===myId;});
+
+  if(!me){
+    var card=h("div",{class:"card"});
+    card.appendChild(h("label",{},["Seu nome"]));
+    var nameInput=h("input",{type:"text", placeholder:"Como você quer aparecer na rede"});
+    card.appendChild(nameInput);
+    card.appendChild(h("div",{style:"height:12px"}));
+    var btn=h("button",{class:"btn", onclick:function(){
+      var val=nameInput.value.trim();
+      if(!val){ toast("Digite seu nome"); return; }
+      btn.disabled=true;
+      sb.from("oficina_rede_participants").upsert({id:myId, name:val}).then(function(res){
+        if(res.error){ btn.disabled=false; toast("Não foi possível entrar: "+res.error.message); return; }
+        toast("Bem-vindo(a), "+val+"!");
+      });
+    }},["Entrar na rede"]);
+    card.appendChild(btn);
+    wrap.appendChild(card);
+    return;
+  }
+
+  wrap.appendChild(h("div",{class:"card"},[
+    h("div",{class:"muted"},["Você é: "]),
+    h("div",{style:"font-family:var(--display);font-size:22px;color:var(--mint2);margin-top:2px"},[me.name])
+  ]));
+
+  if(state.phase==="encerrado"){
+    wrap.appendChild(h("div",{class:"card center"},[
+      h("p",{class:"muted"},["A coleta foi encerrada. Obrigado por participar — o grafo construído por vocês será a base da conversa de agora."])
+    ]));
+    return;
+  }
+
+  // tie form
+  var formCard=h("div",{class:"card"});
+  var isExercise=state.phase==="exercicio";
+  formCard.appendChild(h("h3",{style:"font-size:17px;margin-bottom:10px"},[isExercise? "Adicionar laço hipotético" : "Adicionar um laço"]));
+  if(isExercise){
+    formCard.appendChild(h("p",{class:"muted",style:"margin-bottom:10px"},["Pense em alguém de outro grupo da rede. O que poderia circular entre vocês? Esse laço entra como hipótese."]));
+  }
+  formCard.appendChild(h("label",{},["Nome da pessoa"]));
+  var toInput=h("input",{type:"text", placeholder:"Com quem você trabalha / trabalharia?"});
+  formCard.appendChild(toInput);
+  formCard.appendChild(h("div",{style:"height:10px"}));
+  formCard.appendChild(h("label",{},["Essa pessoa está..."]));
+  var extVal={v:false};
+  var segA, segB;
+  var seg=h("div",{class:"seg"});
+  segA=h("button",{class:"active", onclick:function(){extVal.v=false; segA.className="active"; segB.className="";}},["Nesta sala"]);
+  segB=h("button",{onclick:function(){extVal.v=true; segB.className="active"; segA.className="";}},["Fora da sala"]);
+  seg.appendChild(segA); seg.appendChild(segB);
+  formCard.appendChild(seg);
+  formCard.appendChild(h("div",{style:"height:14px"}));
+  var submitBtn=h("button",{class: isExercise?"btn amber":"btn", onclick:function(){
+    var val=toInput.value.trim();
+    if(!val){ toast("Digite um nome"); return; }
+    if(normName(val)===normName(me.name)){ toast("Escolha outra pessoa"); return; }
+    submitBtn.disabled=true;
+    sb.from("oficina_rede_ties").insert({
+      from_id: myId, from_name: me.name, to_name: val,
+      external: extVal.v, hypothetical: isExercise
+    }).then(function(res){
+      submitBtn.disabled=false;
+      if(res.error){ toast("Erro ao salvar: "+res.error.message); return; }
+      toInput.value="";
+      toast("Laço adicionado!");
+    });
+  }},[isExercise? "Adicionar hipótese" : "+ Adicionar laço"]);
+  formCard.appendChild(submitBtn);
+  wrap.appendChild(formCard);
+
+  // my ties
+  var mine=state.ties.filter(function(t){return t.from===myId;});
+  if(mine.length){
+    var listCard=h("div",{class:"card"});
+    listCard.appendChild(h("h3",{style:"font-size:15px;margin-bottom:6px"},["Seus laços ("+mine.length+")"]));
+    mine.slice().reverse().forEach(function(t){
+      var row=h("div",{class:"tie-item"});
+      row.appendChild(h("div",{class:"tie-meta"},[t.to]));
+      var tags=h("div",{style:"display:flex;gap:6px"});
+      if(t.external) tags.appendChild(h("span",{class:"tag ext"},["fora"]));
+      if(t.hypothetical) tags.appendChild(h("span",{class:"tag hyp"},["hipótese"]));
+      row.appendChild(tags);
+      listCard.appendChild(row);
+    });
+    wrap.appendChild(listCard);
+  }
+}
+
+// ---- facilitator (stage) view ----
+var forceSim=null;
+function renderStage(){
+  var top=h("div",{class:"top-nav"},[brandBar(), h("a",{class:"small-link", href:"#entrar"},["ir para entrada →"])]);
+  root.appendChild(top);
+  var wrap=h("div",{class:"stagewrap"});
+  root.appendChild(wrap);
+
+  if(!db||!user){
+    wrap.appendChild(h("div",{class:"card"},["Recursos ao vivo indisponíveis nesta visualização."]));
+    return;
+  }
+
+  var g=buildGraph();
+  var metrics=computeMetrics(g);
+
+  var header=h("div",{style:"display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:16px;margin-bottom:6px"});
+  header.appendChild(h("div",{},[
+    h("h1",{style:"font-size:34px"},["Observatório da Sala"]),
+    phaseBanner()
+  ]));
+
+  var joinBox=h("div",{class:"join-pill"});
+  var qrHolder=h("div",{id:"qr"});
+  joinBox.appendChild(qrHolder);
+  var joinUrl=location.origin+location.pathname+"#entrar";
+  joinBox.appendChild(h("div",{},[
+    h("div",{class:"muted",style:"margin-bottom:4px"},["Entre pelo celular:"]),
+    h("div",{class:"urltext"},[joinUrl])
+  ]));
+  header.appendChild(joinBox);
+  wrap.appendChild(header);
+
+  var grid=h("div",{class:"stage-grid"});
+  var graphBox=h("div",{class:"graph-box"});
+  grid.appendChild(graphBox);
+
+  var side=h("div",{});
+  var metricsGrid=h("div",{class:"metrics"});
+  function metricEl(k,v,wide,hint){
+    var kids=[h("div",{class:"k"},[k]), h("div",{class:"v"},[v])];
+    if(hint) kids.push(h("div",{class:"hint"},[hint]));
+    return h("div",{class:"metric"+(wide?" wide":"")},kids);
+  }
+  metricsGrid.appendChild(metricEl("Nós", String(metrics.n)));
+  metricsGrid.appendChild(metricEl("Laços reais", String(metrics.m)));
+  metricsGrid.appendChild(metricEl("Grupos", String(metrics.blocks)));
+  metricsGrid.appendChild(metricEl("Densidade", metrics.density.toFixed(2)));
+  metricsGrid.appendChild(metricEl("Distância média", metrics.avgDist? metrics.avgDist.toFixed(2):"—"));
+  metricsGrid.appendChild(metricEl("Laços críticos", String(metrics.bridges), false,
+    "laços que, se caíssem, partiriam a rede em mais pedaços"));
+  metricsGrid.appendChild(metricEl("Dependência", metrics.centralization.toFixed(2), true,
+    "quanto a estrutura da rede depende de poucas pessoas centrais, em vez de estar distribuída"));
+  metricsGrid.appendChild(metricEl("Laços hipotéticos", String(metrics.hypCount), true));
+  side.appendChild(metricsGrid);
+
+  side.appendChild(h("div",{class:"legend"},[
+    h("span",{},[h("span",{class:"dot",style:"background:var(--mint)"}), "pessoa na sala"]),
+    h("span",{},[h("span",{class:"dot",style:"background:var(--dim)"}), "pessoa de fora"]),
+    h("span",{},[h("span",{class:"lineSwatch",style:"border-color:var(--mint2)"}), "laço real"]),
+    h("span",{},[h("span",{class:"lineSwatch",style:"border-color:var(--amber);border-top-style:dashed"}), "laço hipotético"])
+  ]));
+
+  var nodeInfoBox=h("div",{class:"card"});
+  function renderNodeInfo(key){
+    nodeInfoBox.innerHTML="";
+    nodeInfoBox.appendChild(h("h3",{style:"font-size:15px;margin-bottom:8px"},["Detalhe do nó"]));
+    if(!key){
+      nodeInfoBox.appendChild(h("div",{class:"muted"},["Clique em uma pessoa no grafo para ver os detalhes dela."]));
+      return;
+    }
+    var d=nodeDetails(key, g, metrics);
+    if(!d){
+      nodeInfoBox.appendChild(h("div",{class:"muted"},["Nó não encontrado — pode ter sido removido."]));
+      return;
+    }
+    var rows=[
+      ["Nome", d.label],
+      ["Status", d.inRoom? "Na sala":"Pessoa de fora"],
+      ["Grau (laços reais)", String(d.degree)],
+      ["Grupo", d.compSize? (d.isGiant? "Maior grupo ("+d.compSize+" pessoas)" : "Grupo de "+d.compSize+(d.compSize>1?" pessoas":" pessoa")) : "—"],
+      ["Laços críticos aqui", String(d.bridgeDeg)],
+      ["Laços hipotéticos", String(d.hypDeg)],
+      ["Laços externos declarados", String(d.externalCount)]
+    ];
+    rows.forEach(function(r){
+      nodeInfoBox.appendChild(h("div",{style:"display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid rgba(146,235,208,.08);font-size:13px"},[
+        h("span",{class:"muted"},[r[0]]), h("span",{style:"font-weight:600;text-align:right"},[r[1]])
+      ]));
+    });
+  }
+  renderNodeInfo(null);
+  side.appendChild(nodeInfoBox);
+
+  wrap.appendChild(grid);
+  grid.insertBefore(graphBox, grid.firstChild);
+  grid.appendChild(side);
+
+  // admin controls — visíveis só para quem estiver autenticado (o facilitador)
+  if(!isAdmin){
+    var loginCard=h("div",{class:"card"});
+    loginCard.appendChild(h("h3",{style:"font-size:15px;margin-bottom:10px"},["Entrar como facilitador"]));
+    var emailInput=h("input",{type:"text", placeholder:"e-mail"});
+    var passInput=h("input",{type:"password", placeholder:"senha"});
+    loginCard.appendChild(emailInput);
+    loginCard.appendChild(h("div",{style:"height:8px"}));
+    loginCard.appendChild(passInput);
+    loginCard.appendChild(h("div",{style:"height:10px"}));
+    var loginBtn=h("button",{class:"btn secondary", onclick:function(){
+      loginBtn.disabled=true;
+      sb.auth.signInWithPassword({email:emailInput.value.trim(), password:passInput.value}).then(function(res){
+        loginBtn.disabled=false;
+        if(res.error){ toast("Erro ao entrar: "+res.error.message); return; }
+        toast("Login ok.");
+      });
+    }},["Entrar"]);
+    loginCard.appendChild(loginBtn);
+    side.appendChild(loginCard);
+  } else {
+    var admin=h("div",{class:"card"});
+    admin.appendChild(h("h3",{style:"font-size:15px;margin-bottom:10px"},["Controles do facilitador"]));
+    var seg=h("div",{class:"seg"});
+    ["coleta","exercicio","encerrado"].forEach(function(ph){
+      var label={coleta:"Coleta",exercicio:"Exercício",encerrado:"Encerrar"}[ph];
+      var b=h("button",{class: state.phase===ph?"active":"", onclick:function(){
+        sb.from("oficina_rede_meta").update({phase:ph, updated_at:new Date().toISOString()}).eq("key","state").then(function(res){
+          if(res.error) toast("Erro: "+res.error.message);
+        });
+      }},[label]);
+      seg.appendChild(b);
+    });
+    admin.appendChild(seg);
+    admin.appendChild(h("div",{style:"height:10px"}));
+    var row=h("div",{class:"row"});
+    var exportBtn=h("button",{class:"btn secondary", onclick:function(){
+      var payload=JSON.stringify({participants:state.participants, ties:state.ties, metrics:metrics}, null, 2);
+      var blob=new Blob([payload], {type:"application/json"});
+      var a=document.createElement("a");
+      a.href=URL.createObjectURL(blob);
+      a.download="oficina-rede-"+Date.now()+".json";
+      document.body.appendChild(a); a.click(); a.remove();
+    }},["Exportar dados"]);
+    var resetBtn=h("button",{class:"btn danger", onclick:function(){
+      if(!confirm("Apagar TODOS os participantes e laços? Isso não pode ser desfeito.")) return;
+      Promise.all([
+        sb.from("oficina_rede_ties").delete().not("id","is",null),
+        sb.from("oficina_rede_participants").delete().not("id","is",null)
+      ]).then(function(results){
+        var err=results.find(function(r){return r.error;});
+        if(err){ toast("Erro: "+err.error.message); return; }
+        toast("Dados apagados.");
+      });
+    }},["Zerar dados (teste)"]);
+    row.appendChild(exportBtn); row.appendChild(resetBtn);
+    admin.appendChild(row);
+    side.appendChild(admin);
+  }
+
+  // QR code
+  if(window.QRCode){
+    try{ new QRCode(qrHolder, {text:joinUrl, width:104, height:104, colorDark:"#0B2A45", colorLight:"#ffffff"}); }
+    catch(e){ qrHolder.textContent="QR indisponível"; }
+  } else {
+    qrHolder.style.display="flex"; qrHolder.style.alignItems="center"; qrHolder.style.justifyContent="center";
+    qrHolder.style.color="#0B2A45"; qrHolder.style.fontSize="11px"; qrHolder.textContent="QR indisponível — use o link";
+  }
+
+  drawGraph(graphBox, g, function(key){
+    renderNodeInfo(key);
+  });
+}
+
+function drawGraph(container, g, onNodeClick){
+  if(!window.d3){ container.innerHTML="<div class='muted' style='padding:20px'>Biblioteca de grafo indisponível.</div>"; return; }
+  var w=container.clientWidth||800, hgt=container.clientHeight||600;
+  var svg=d3.select(container).append("svg").attr("width",w).attr("height",hgt).attr("viewBox","0 0 "+w+" "+hgt);
+  svg.style("cursor","grab");
+
+  var defs=svg.append("defs");
+  var glow=defs.append("filter").attr("id","nodeglow").attr("x","-100%").attr("y","-100%").attr("width","300%").attr("height","300%");
+  glow.append("feGaussianBlur").attr("stdDeviation","4").attr("result","b");
+  var merge=glow.append("feMerge"); merge.append("feMergeNode").attr("in","b"); merge.append("feMergeNode").attr("in","SourceGraphic");
+
+  var nodeArr=Object.keys(g.nodes).map(function(k){ return g.nodes[k]; });
+  var linkArr=g.edges.map(function(e){ return {source:e.a, target:e.b, real:e.real, hyp:e.hyp}; });
+
+  if(nodeArr.length===0){
+    svg.append("text").attr("x",w/2).attr("y",hgt/2).attr("text-anchor","middle")
+      .attr("fill","#B9CBDD").attr("font-family","Poppins").attr("font-size","16px")
+      .text("Aguardando participantes…");
+    return;
+  }
+
+  // everything pannable/zoomable lives inside "viewport"; defs/filters stay outside it
+  var viewport=svg.append("g").attr("class","viewport");
+
+  var sim=d3.forceSimulation(nodeArr)
+    .force("link", d3.forceLink(linkArr).id(function(d){return d.key;}).distance(90).strength(0.5))
+    .force("charge", d3.forceManyBody().strength(-170))
+    .force("center", d3.forceCenter(w/2, hgt/2))
+    .force("collide", d3.forceCollide(26));
+
+  var link=viewport.append("g").selectAll("line").data(linkArr).enter().append("line")
+    .attr("stroke", function(d){ return d.hyp? "#FFC24D" : "#5FE0C6"; })
+    .attr("stroke-width", function(d){ return d.real? 2 : 1.6; })
+    .attr("stroke-dasharray", function(d){ return d.hyp? "6 5" : null; })
+    .attr("opacity", function(d){ return d.real? .85 : .7; });
+
+  var node=viewport.append("g").selectAll("g").data(nodeArr).enter().append("g")
+    .style("cursor","pointer");
+
+  function rOf(d){ return 9+Math.min(14,d.degree*2.5); }
+
+  node.append("circle")
+    .attr("r", rOf)
+    .attr("fill", function(d){ return d.inRoom? "#5FE0C6" : "#3f6f86"; })
+    .attr("filter","url(#nodeglow)")
+    .attr("stroke","none").attr("stroke-width",0);
+
+  node.append("text")
+    .text(function(d){ return d.label; })
+    .attr("text-anchor","middle")
+    .attr("dy", function(d){ return -(14+Math.min(14,d.degree*2.5)); })
+    .attr("fill","#fff")
+    .attr("font-family","Poppins").attr("font-weight","600")
+    .attr("font-size","12px")
+    .style("pointer-events","none");
+
+  // pan + zoom on the whole canvas (mouse wheel / pinch / drag on empty space)
+  var zoom=d3.zoom().scaleExtent([0.3,4]).on("zoom", function(event){
+    viewport.attr("transform", event.transform);
+  });
+  svg.call(zoom);
+  svg.on("dblclick.zoom", null);
+  svg.on("dblclick", function(){
+    svg.transition().duration(300).call(zoom.transform, d3.zoomIdentity);
+  });
+
+  // drag individual nodes to reorganize the layout by hand; a dropped node stays
+  // pinned where you left it (the rest of the graph keeps simulating around it)
+  var drag=d3.drag()
+    .on("start", function(event,d){
+      if(!event.active) sim.alphaTarget(0.25).restart();
+      d.fx=d.x; d.fy=d.y; d.__dragged=false;
+      svg.style("cursor","grabbing");
+    })
+    .on("drag", function(event,d){
+      d.fx=event.x; d.fy=event.y; d.__dragged=true;
+    })
+    .on("end", function(event,d){
+      sim.alphaTarget(0);
+      svg.style("cursor","grab");
+    });
+  node.call(drag);
+
+  node.on("click", function(event,d){
+    if(d.__dragged){ d.__dragged=false; return; }
+    event.stopPropagation();
+    node.select("circle")
+      .attr("stroke", function(dd){ return dd.key===d.key? "#FFC24D":"none"; })
+      .attr("stroke-width", function(dd){ return dd.key===d.key? 3:0; });
+    if(typeof onNodeClick==="function") onNodeClick(d.key);
+  });
+
+  var hint=document.createElement("div");
+  hint.className="graph-hint";
+  hint.textContent="Arraste os nós para reorganizar · role para zoom · duplo clique para centralizar";
+  container.appendChild(hint);
+
+  sim.on("tick", function(){
+    nodeArr.forEach(function(d){
+      var r=rOf(d)+4;
+      if(d.fx==null) d.x=Math.max(r, Math.min(w-r, d.x));
+      if(d.fy==null) d.y=Math.max(r, Math.min(hgt-r, d.y));
+    });
+    link.attr("x1",function(d){return d.source.x;}).attr("y1",function(d){return d.source.y;})
+        .attr("x2",function(d){return d.target.x;}).attr("y2",function(d){return d.target.y;});
+    node.attr("transform", function(d){ return "translate("+d.x+","+d.y+")"; });
+  });
+}
+
+// ---------- data wiring ----------
+// local, per-browser id — participants never log in; this is how "quem sou eu" persists
+function localId(){
+  var k="oficina_rede_my_id";
+  var v=localStorage.getItem(k);
+  if(!v){
+    v=(window.crypto&&crypto.randomUUID)? crypto.randomUUID() : ("id-"+Math.random().toString(36).slice(2)+Date.now());
+    localStorage.setItem(k,v);
+  }
+  return v;
+}
+
+async function loadAll(){
+  var p=await sb.from("oficina_rede_participants").select("*");
+  var t=await sb.from("oficina_rede_ties").select("*");
+  var m=await sb.from("oficina_rede_meta").select("*").eq("key","state").maybeSingle();
+  if(p.error) console.error("participants",p.error);
+  else state.participants=p.data.map(function(r){ return {id:r.id, name:r.name}; });
+  if(t.error) console.error("ties",t.error);
+  else state.ties=t.data.map(function(r){ return {
+    id:r.id, from:r.from_id, fromName:r.from_name, to:r.to_name,
+    external:!!r.external, hypothetical:!!r.hypothetical, createdAt:r.created_at
+  }; });
+  if(!m.error && m.data) state.phase=m.data.phase||"coleta";
+  state.loaded=true;
+  render();
+}
+
+function subscribe(){
+  loadAll();
+  sb.channel("oficina-rede-changes")
+    .on("postgres_changes", {event:"*", schema:"public", table:"oficina_rede_participants"}, loadAll)
+    .on("postgres_changes", {event:"*", schema:"public", table:"oficina_rede_ties"}, loadAll)
+    .on("postgres_changes", {event:"*", schema:"public", table:"oficina_rede_meta"}, loadAll)
+    .subscribe();
+}
+
+async function init(){
+  myId=localId();
+  try{
+    if(window.supabase && SUPABASE_URL.indexOf("__")!==0){
+      sb=window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+      var sess=await sb.auth.getSession();
+      isAdmin=!!(sess && sess.data && sess.data.session);
+      sb.auth.onAuthStateChange(function(event, session){ isAdmin=!!session; render(); });
+    }
+  }catch(e){ sb=null; }
+  if(!location.hash) location.hash="#entrar";
+  render();
+  if(sb) subscribe();
+}
+init();
+
+})();
+</script>
+</body>
+</html>
