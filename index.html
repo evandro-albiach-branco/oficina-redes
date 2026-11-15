@@ -96,14 +96,34 @@
 var SUPABASE_URL = "https://covcbvhrihsstozlnrqp.supabase.co";
 var SUPABASE_ANON_KEY = "sb_publishable_hGbwDVlICflZXlIFYKiQVA_qb6zPauK";
 
-var sb=null, myId=null, isAdmin=false;
+var sb=null, isAdmin=false;
 var state={
   phase:"coleta",
   participants:[], // {id, name}
   ties:[],         // {id, from, fromName, to, external, hypothetical, createdAt}
   loaded:false
 };
-var unsub=[];
+// multi-oficina (sessão) support: cada evento tem seu próprio código e seus
+// próprios participantes/laços, isolados por session_id
+var currentSession=null; // {id, code, name, phase}
+var notFoundCode=null;
+var sessionsList=[];
+var sessionsListLoaded=false;
+var sessionChannel=null;
+
+function parseHash(){
+  var hRaw=(location.hash||"").replace("#","");
+  var m=hRaw.match(/^(palco|entrar)(?:-(.+))?$/);
+  if(!m) return {view:"entrar", code:null};
+  return {view:m[1], code:m[2]? m[2].trim().toUpperCase() : null};
+}
+
+function genSessionCode(){
+  var chars="ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // sem O/0/I/1 para evitar confusão
+  var out="";
+  for(var i=0;i<6;i++) out+=chars[Math.floor(Math.random()*chars.length)];
+  return out;
+}
 
 function h(tag, attrs, children){
   var el=document.createElement(tag);
@@ -274,11 +294,59 @@ var root=document.getElementById("root");
 
 function render(){
   root.innerHTML="";
-  var hash=(location.hash||"").replace("#","");
-  if(hash==="palco") renderStage();
-  else renderEntrar();
+  var route=parseHash();
+
+  if(route.code){
+    if(!sb){ /* sem config, nada a resolver — cai no fluxo normal abaixo */ }
+    else if(route.code===notFoundCode){
+      root.appendChild(brandBar());
+      var w=h("div",{class:"wrap"});
+      w.appendChild(h("div",{class:"card center"},[
+        h("p",{class:"muted"},["Oficina não encontrada para o código \""+route.code+"\"."]),
+        h("a",{class:"btn secondary", href: route.view==="palco"?"#palco":"#entrar", style:"margin-top:12px;display:inline-block;width:auto"},["Voltar"])
+      ]));
+      root.appendChild(w);
+      return;
+    }
+    else if(!currentSession || currentSession.code!==route.code){
+      root.appendChild(brandBar());
+      root.appendChild(h("div",{class:"wrap center", style:"padding-top:30vh"},[h("span",{class:"muted"},["Carregando oficina…"])]));
+      openSession(route.code, function(){ render(); });
+      return;
+    }
+  }
+
+  if(route.view==="palco") renderStage(route.code);
+  else renderEntrar(route.code);
 }
 window.addEventListener("hashchange", render);
+
+// resolve um código de oficina em currentSession (ou null se não existir),
+// (re)assina o canal realtime correspondente e chama done() ao concluir
+function openSession(code, done){
+  sb.from("oficina_rede_sessions").select("*").eq("code",code).maybeSingle().then(function(res){
+    if(res.error || !res.data){
+      currentSession=null; notFoundCode=code;
+      if(done) done(null);
+      return;
+    }
+    notFoundCode=null;
+    currentSession={id:res.data.id, code:res.data.code, name:res.data.name, phase:res.data.phase||"coleta"};
+    subscribeSession();
+    if(done) done(currentSession);
+  });
+}
+
+function subscribeSession(){
+  if(sessionChannel){ sb.removeChannel(sessionChannel); sessionChannel=null; }
+  if(!currentSession) return;
+  loadAll();
+  sessionChannel=sb.channel("oficina-rede-session-"+currentSession.id)
+    .on("postgres_changes", {event:"*", schema:"public", table:"oficina_rede_participants", filter:"session_id=eq."+currentSession.id}, loadAll)
+    .on("postgres_changes", {event:"*", schema:"public", table:"oficina_rede_ties", filter:"session_id=eq."+currentSession.id}, loadAll)
+    .on("postgres_changes", {event:"*", schema:"public", table:"oficina_rede_sessions", filter:"id=eq."+currentSession.id}, loadAll)
+    .subscribe();
+}
 
 function brandBar(){
   return h("div",{class:"brand"},["MONITORA", h("span",{class:"ea"},["EA"]), " · OFICINA REDE"]);
@@ -296,7 +364,7 @@ function toast(msg){
 }
 
 // ---- participant (join) view ----
-function renderEntrar(){
+function renderEntrar(code){
   root.appendChild(brandBar());
   var wrap=h("div",{class:"wrap"});
   root.appendChild(wrap);
@@ -309,10 +377,31 @@ function renderEntrar(){
     return;
   }
 
+  if(!code){
+    wrap.appendChild(h("h1",{style:"font-size:30px;margin:14px 0 6px"},["Oficina Rede"]));
+    wrap.appendChild(h("p",{class:"muted"},["Ciência das Redes para Fortalecer a Educação Ambiental"]));
+    var codeCard=h("div",{class:"card"});
+    codeCard.appendChild(h("label",{},["Código da oficina"]));
+    var codeInput=h("input",{type:"text", placeholder:"ex: AB3X7K", style:"text-transform:uppercase"});
+    codeCard.appendChild(codeInput);
+    codeCard.appendChild(h("div",{style:"height:10px"}));
+    codeCard.appendChild(h("p",{class:"muted"},["Peça o código ao facilitador — ele aparece na tela do palco, junto com o QR code."]));
+    codeCard.appendChild(h("div",{style:"height:4px"}));
+    var goBtn=h("button",{class:"btn", onclick:function(){
+      var v=codeInput.value.trim().toUpperCase();
+      if(!v){ toast("Digite o código da oficina"); return; }
+      location.hash="#entrar-"+v;
+    }},["Entrar"]);
+    codeCard.appendChild(goBtn);
+    wrap.appendChild(codeCard);
+    return;
+  }
+
   wrap.appendChild(h("h1",{style:"font-size:30px;margin:14px 0 6px"},["Oficina Rede"]));
-  wrap.appendChild(h("p",{class:"muted"},["Ciência das Redes para Fortalecer a Educação Ambiental"]));
+  wrap.appendChild(h("p",{class:"muted"},[currentSession.name||"Ciência das Redes para Fortalecer a Educação Ambiental"]));
   wrap.appendChild(phaseBanner());
 
+  var myId=localId(code);
   var me=state.participants.find(function(p){return p.id===myId;});
 
   if(!me){
@@ -325,7 +414,7 @@ function renderEntrar(){
       var val=nameInput.value.trim();
       if(!val){ toast("Digite seu nome"); return; }
       btn.disabled=true;
-      sb.from("oficina_rede_participants").upsert({id:myId, name:val}).then(function(res){
+      sb.from("oficina_rede_participants").upsert({id:myId, name:val, session_id:currentSession.id}).then(function(res){
         if(res.error){ btn.disabled=false; toast("Não foi possível entrar: "+res.error.message); return; }
         toast("Bem-vindo(a), "+val+"!");
       });
@@ -374,7 +463,7 @@ function renderEntrar(){
     submitBtn.disabled=true;
     sb.from("oficina_rede_ties").insert({
       from_id: myId, from_name: me.name, to_name: val,
-      external: extVal.v, hypothetical: isExercise
+      external: extVal.v, hypothetical: isExercise, session_id: currentSession.id
     }).then(function(res){
       submitBtn.disabled=false;
       if(res.error){ toast("Erro ao salvar: "+res.error.message); return; }
@@ -405,8 +494,107 @@ function renderEntrar(){
 
 // ---- facilitator (stage) view ----
 var forceSim=null;
-function renderStage(){
-  var top=h("div",{class:"top-nav"},[brandBar(), h("a",{class:"small-link", href:"#entrar"},["ir para entrada →"])]);
+
+function renderLoginCard(){
+  var loginCard=h("div",{class:"card"});
+  loginCard.appendChild(h("h3",{style:"font-size:15px;margin-bottom:10px"},["Entrar como facilitador"]));
+  var emailInput=h("input",{type:"text", placeholder:"e-mail"});
+  var passInput=h("input",{type:"password", placeholder:"senha"});
+  loginCard.appendChild(emailInput);
+  loginCard.appendChild(h("div",{style:"height:8px"}));
+  loginCard.appendChild(passInput);
+  loginCard.appendChild(h("div",{style:"height:10px"}));
+  var loginBtn=h("button",{class:"btn secondary", onclick:function(){
+    loginBtn.disabled=true;
+    sb.auth.signInWithPassword({email:emailInput.value.trim(), password:passInput.value}).then(function(res){
+      loginBtn.disabled=false;
+      if(res.error){ toast("Erro ao entrar: "+res.error.message); return; }
+      toast("Login ok.");
+    });
+  }},["Entrar"]);
+  loginCard.appendChild(loginBtn);
+  return loginCard;
+}
+
+// tela sem código: escolher uma oficina existente ou criar uma nova (só facilitador)
+function renderSessionPicker(wrap){
+  var titleRow=h("div",{style:"display:flex;justify-content:space-between;align-items:center"},[
+    h("h1",{style:"font-size:32px"},["Oficinas"])
+  ]);
+  if(isAdmin && sessionsListLoaded){
+    titleRow.appendChild(h("button",{class:"small-link", style:"background:none;border:none;cursor:pointer;padding:0;font-family:inherit", onclick:function(){
+      sessionsListLoaded=false; render();
+    }},["↻ atualizar"]));
+  }
+  wrap.appendChild(titleRow);
+  wrap.appendChild(h("p",{class:"muted"},["Escolha uma oficina para abrir o palco, ou crie uma nova."]));
+
+  if(!isAdmin){
+    wrap.appendChild(h("p",{class:"muted"},["Entre como facilitador para ver e criar oficinas."]));
+    wrap.appendChild(renderLoginCard());
+    return;
+  }
+
+  if(!sessionsListLoaded){
+    wrap.appendChild(h("div",{class:"card"},[h("span",{class:"muted"},["Carregando oficinas…"])]));
+    sb.from("oficina_rede_sessions").select("*").order("created_at",{ascending:false}).then(function(res){
+      sessionsList=res.error? [] : (res.data||[]);
+      sessionsListLoaded=true;
+      render();
+    });
+    return;
+  }
+
+  var listCard=h("div",{class:"card"});
+  if(sessionsList.length===0){
+    listCard.appendChild(h("div",{class:"muted"},["Nenhuma oficina criada ainda."]));
+  } else {
+    var phaseLabel={coleta:"Coleta",exercicio:"Exercício",encerrado:"Encerrada"};
+    sessionsList.forEach(function(s){
+      var row=h("a",{href:"#palco-"+s.code, style:"display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.07);text-decoration:none;color:var(--ink)"},[
+        h("div",{},[
+          h("div",{style:"font-weight:600"},[s.name||s.code]),
+          h("div",{class:"tie-meta"},["Código: "+s.code])
+        ]),
+        h("span",{class:"tag ext"},[phaseLabel[s.phase]||s.phase])
+      ]);
+      listCard.appendChild(row);
+    });
+  }
+  wrap.appendChild(listCard);
+
+  var newCard=h("div",{class:"card"});
+  newCard.appendChild(h("h3",{style:"font-size:15px;margin-bottom:10px"},["Nova oficina"]));
+  newCard.appendChild(h("label",{},["Nome (opcional)"]));
+  var nameInput=h("input",{type:"text", placeholder:"ex: Rebea — turma de manhã"});
+  newCard.appendChild(nameInput);
+  newCard.appendChild(h("div",{style:"height:10px"}));
+  var createBtn=h("button",{class:"btn", onclick:function(){
+    createBtn.disabled=true;
+    var code=genSessionCode();
+    sb.from("oficina_rede_sessions").insert({code:code, name:nameInput.value.trim()||null, phase:"coleta"}).then(function(res){
+      createBtn.disabled=false;
+      if(res.error){ toast("Erro ao criar oficina: "+res.error.message); return; }
+      location.hash="#palco-"+code;
+    });
+  }},["Criar oficina"]);
+  newCard.appendChild(createBtn);
+  wrap.appendChild(newCard);
+}
+
+function renderStage(code){
+  var navKids=[brandBar()];
+  var navRight=h("div",{style:"display:flex;align-items:center;gap:16px"});
+  if(code){
+    navRight.appendChild(h("a",{class:"small-link", href:"#palco"},["← trocar de oficina"]));
+    navRight.appendChild(h("button",{class:"small-link", style:"background:none;border:none;cursor:pointer;padding:0;font-family:inherit", onclick:function(){
+      toast("Atualizando…");
+      loadAll();
+    }},["↻ atualizar"]));
+  }
+  navRight.appendChild(h("a",{class:"small-link", href: code? "#entrar-"+code : "#entrar"},["ir para entrada →"]));
+  navKids.push(navRight);
+  var top=h("div",{class:"top-nav"}, navKids);
   root.appendChild(top);
   var wrap=h("div",{class:"stagewrap"});
   root.appendChild(wrap);
@@ -416,19 +604,25 @@ function renderStage(){
     return;
   }
 
+  if(!code){
+    renderSessionPicker(wrap);
+    return;
+  }
+
   var g=buildGraph();
   var metrics=computeMetrics(g);
 
   var header=h("div",{style:"display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:16px;margin-bottom:6px"});
   header.appendChild(h("div",{},[
     h("h1",{style:"font-size:34px"},["Observatório da Sala"]),
+    h("div",{class:"muted", style:"margin-bottom:4px"},[(currentSession.name||"Oficina")+" · código "+currentSession.code]),
     phaseBanner()
   ]));
 
   var joinBox=h("div",{class:"join-pill"});
   var qrHolder=h("div",{id:"qr"});
   joinBox.appendChild(qrHolder);
-  var joinUrl=location.origin+location.pathname+"#entrar";
+  var joinUrl=location.origin+location.pathname+"#entrar-"+currentSession.code;
   joinBox.appendChild(h("div",{},[
     h("div",{class:"muted",style:"margin-bottom:4px"},["Entre pelo celular:"]),
     h("div",{class:"urltext"},[joinUrl])
@@ -503,24 +697,7 @@ function renderStage(){
 
   // admin controls — visíveis só para quem estiver autenticado (o facilitador)
   if(!isAdmin){
-    var loginCard=h("div",{class:"card"});
-    loginCard.appendChild(h("h3",{style:"font-size:15px;margin-bottom:10px"},["Entrar como facilitador"]));
-    var emailInput=h("input",{type:"text", placeholder:"e-mail"});
-    var passInput=h("input",{type:"password", placeholder:"senha"});
-    loginCard.appendChild(emailInput);
-    loginCard.appendChild(h("div",{style:"height:8px"}));
-    loginCard.appendChild(passInput);
-    loginCard.appendChild(h("div",{style:"height:10px"}));
-    var loginBtn=h("button",{class:"btn secondary", onclick:function(){
-      loginBtn.disabled=true;
-      sb.auth.signInWithPassword({email:emailInput.value.trim(), password:passInput.value}).then(function(res){
-        loginBtn.disabled=false;
-        if(res.error){ toast("Erro ao entrar: "+res.error.message); return; }
-        toast("Login ok.");
-      });
-    }},["Entrar"]);
-    loginCard.appendChild(loginBtn);
-    side.appendChild(loginCard);
+    side.appendChild(renderLoginCard());
   } else {
     var admin=h("div",{class:"card"});
     admin.appendChild(h("h3",{style:"font-size:15px;margin-bottom:10px"},["Controles do facilitador"]));
@@ -528,7 +705,7 @@ function renderStage(){
     ["coleta","exercicio","encerrado"].forEach(function(ph){
       var label={coleta:"Coleta",exercicio:"Exercício",encerrado:"Encerrar"}[ph];
       var b=h("button",{class: state.phase===ph?"active":"", onclick:function(){
-        sb.from("oficina_rede_meta").update({phase:ph, updated_at:new Date().toISOString()}).eq("key","state").then(function(res){
+        sb.from("oficina_rede_sessions").update({phase:ph, updated_at:new Date().toISOString()}).eq("id",currentSession.id).then(function(res){
           if(res.error) toast("Erro: "+res.error.message);
         });
       }},[label]);
@@ -538,22 +715,22 @@ function renderStage(){
     admin.appendChild(h("div",{style:"height:10px"}));
     var row=h("div",{class:"row"});
     var exportBtn=h("button",{class:"btn secondary", onclick:function(){
-      var payload=JSON.stringify({participants:state.participants, ties:state.ties, metrics:metrics}, null, 2);
+      var payload=JSON.stringify({oficina:currentSession, participants:state.participants, ties:state.ties, metrics:metrics}, null, 2);
       var blob=new Blob([payload], {type:"application/json"});
       var a=document.createElement("a");
       a.href=URL.createObjectURL(blob);
-      a.download="oficina-rede-"+Date.now()+".json";
+      a.download="oficina-rede-"+currentSession.code+"-"+Date.now()+".json";
       document.body.appendChild(a); a.click(); a.remove();
     }},["Exportar dados"]);
     var resetBtn=h("button",{class:"btn danger", onclick:function(){
-      if(!confirm("Apagar TODOS os participantes e laços? Isso não pode ser desfeito.")) return;
+      if(!confirm("Apagar os participantes e laços DESTA oficina ("+currentSession.code+")? Isso não pode ser desfeito.")) return;
       Promise.all([
-        sb.from("oficina_rede_ties").delete().not("id","is",null),
-        sb.from("oficina_rede_participants").delete().not("id","is",null)
+        sb.from("oficina_rede_ties").delete().eq("session_id",currentSession.id),
+        sb.from("oficina_rede_participants").delete().eq("session_id",currentSession.id)
       ]).then(function(results){
         var err=results.find(function(r){return r.error;});
         if(err){ toast("Erro: "+err.error.message); return; }
-        toast("Dados apagados.");
+        toast("Dados desta oficina apagados.");
       });
     }},["Zerar dados (teste)"]);
     row.appendChild(exportBtn); row.appendChild(resetBtn);
@@ -685,9 +862,10 @@ function drawGraph(container, g, onNodeClick){
 }
 
 // ---------- data wiring ----------
-// local, per-browser id — participants never log in; this is how "quem sou eu" persists
-function localId(){
-  var k="oficina_rede_my_id";
+// local, per-browser id, por oficina — participantes nunca fazem login; é assim
+// que "quem sou eu" persiste, sem misturar a mesma pessoa entre oficinas diferentes
+function localId(code){
+  var k="oficina_rede_my_id:"+(code||"_global");
   var v=localStorage.getItem(k);
   if(!v){
     v=(window.crypto&&crypto.randomUUID)? crypto.randomUUID() : ("id-"+Math.random().toString(36).slice(2)+Date.now());
@@ -697,9 +875,11 @@ function localId(){
 }
 
 async function loadAll(){
-  var p=await sb.from("oficina_rede_participants").select("*");
-  var t=await sb.from("oficina_rede_ties").select("*");
-  var m=await sb.from("oficina_rede_meta").select("*").eq("key","state").maybeSingle();
+  if(!currentSession){ state.participants=[]; state.ties=[]; state.loaded=true; render(); return; }
+  var sid=currentSession.id;
+  var p=await sb.from("oficina_rede_participants").select("*").eq("session_id",sid);
+  var t=await sb.from("oficina_rede_ties").select("*").eq("session_id",sid);
+  var s=await sb.from("oficina_rede_sessions").select("*").eq("id",sid).maybeSingle();
   if(p.error) console.error("participants",p.error);
   else state.participants=p.data.map(function(r){ return {id:r.id, name:r.name}; });
   if(t.error) console.error("ties",t.error);
@@ -707,33 +887,26 @@ async function loadAll(){
     id:r.id, from:r.from_id, fromName:r.from_name, to:r.to_name,
     external:!!r.external, hypothetical:!!r.hypothetical, createdAt:r.created_at
   }; });
-  if(!m.error && m.data) state.phase=m.data.phase||"coleta";
+  if(!s.error && s.data){
+    currentSession.phase=s.data.phase||"coleta";
+    currentSession.name=s.data.name;
+    state.phase=currentSession.phase;
+  }
   state.loaded=true;
   render();
 }
 
-function subscribe(){
-  loadAll();
-  sb.channel("oficina-rede-changes")
-    .on("postgres_changes", {event:"*", schema:"public", table:"oficina_rede_participants"}, loadAll)
-    .on("postgres_changes", {event:"*", schema:"public", table:"oficina_rede_ties"}, loadAll)
-    .on("postgres_changes", {event:"*", schema:"public", table:"oficina_rede_meta"}, loadAll)
-    .subscribe();
-}
-
 async function init(){
-  myId=localId();
   try{
     if(window.supabase && SUPABASE_URL.indexOf("__")!==0){
       sb=window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
       var sess=await sb.auth.getSession();
       isAdmin=!!(sess && sess.data && sess.data.session);
-      sb.auth.onAuthStateChange(function(event, session){ isAdmin=!!session; render(); });
+      sb.auth.onAuthStateChange(function(event, session){ isAdmin=!!session; sessionsListLoaded=false; render(); });
     }
   }catch(e){ sb=null; }
   if(!location.hash) location.hash="#entrar";
   render();
-  if(sb) subscribe();
 }
 init();
 
