@@ -78,6 +78,13 @@
   .legend{display:flex; gap:16px; font-size:12px; color:var(--ink-soft); flex-wrap:wrap; margin-top:10px}
   .legend span{display:inline-flex; align-items:center; gap:6px}
   .dot{width:9px;height:9px;border-radius:50%;display:inline-block}
+  .cmp-table{display:flex; flex-direction:column; gap:2px}
+  .cmp-row{display:grid; grid-template-columns:1.3fr 1fr 1fr; gap:8px; align-items:center; padding:7px 0; border-bottom:1px solid rgba(146,235,208,.08); font-size:13px}
+  .cmp-row:last-child{border-bottom:none}
+  .cmp-row span:nth-child(2), .cmp-row span:nth-child(3){text-align:center; font-weight:600}
+  .cmp-head{font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-soft); font-weight:600}
+  .cmp-head span:nth-child(2), .cmp-head span:nth-child(3){text-align:center}
+  .cmp-changed span:nth-child(3){color:var(--amber)}
   .lineSwatch{width:18px;height:0;border-top:2px solid; display:inline-block}
   .toast{position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:#0f3550; color:#fff; padding:10px 18px;
     border-radius:30px; font-size:14px; box-shadow:0 10px 30px rgba(0,0,0,.4); z-index:50; border:1px solid rgba(146,235,208,.3)}
@@ -110,6 +117,9 @@ var notFoundCode=null;
 var sessionsList=[];
 var sessionsListLoaded=false;
 var sessionChannel=null;
+// layout de organização topológica do grafo, escolhido no palco — persiste
+// entre re-renders (dados chegando ao vivo) até alguém trocar de novo
+var graphLayout="force";
 
 function parseHash(){
   var hRaw=(location.hash||"").replace("#","");
@@ -242,11 +252,19 @@ function buildGraph(){
   return {nodes:nodes, edges:edges};
 }
 
-function computeMetrics(g){
+// includeHyp=false (padrão): só laços reais contam na estrutura — é a leitura
+// "de verdade" da rede, usada no painel principal. includeHyp=true: laços
+// hipotéticos também contam como se existissem, usada só para o comparativo
+// "com e sem hipotéticos" da fase de exercício.
+function computeMetrics(g, includeHyp){
   var keys=Object.keys(g.nodes);
   var n=keys.length;
-  var realEdges=g.edges.filter(function(e){return e.real;});
+  var realEdges=g.edges.filter(function(e){return includeHyp? (e.real||e.hyp) : e.real;});
   var m=realEdges.length;
+  // grau recalculado aqui (em vez de usar g.nodes[k].degree, que é sempre só
+  // de laços reais) para que a variante "com hipotéticos" tenha seu próprio grau
+  var degreeHere={}; keys.forEach(function(k){ degreeHere[k]=0; });
+  realEdges.forEach(function(e){ degreeHere[e.a]++; degreeHere[e.b]++; });
   var idx={}; keys.forEach(function(k,i){idx[k]=i;});
   // each adjacency entry carries the neighbor index and the pair-key of the edge used,
   // so the bridge search below can identify *which* edge is critical, not just count them
@@ -312,9 +330,9 @@ function computeMetrics(g){
   for(var s2=0;s2<n;s2++) if(disc[s2]===-1) dfs(s2,null);
   var bridgeCount=Object.keys(bridgeEdges).length;
 
-  // degree centralization (Freeman), on real-degree
-  var maxDeg=0; keys.forEach(function(k){ if(g.nodes[k].degree>maxDeg) maxDeg=g.nodes[k].degree; });
-  var sumDiff=0; keys.forEach(function(k){ sumDiff += (maxDeg-g.nodes[k].degree); });
+  // degree centralization (Freeman), no grau desta variante (real, ou real+hipotético)
+  var maxDeg=0; keys.forEach(function(k){ if(degreeHere[k]>maxDeg) maxDeg=degreeHere[k]; });
+  var sumDiff=0; keys.forEach(function(k){ sumDiff += (maxDeg-degreeHere[k]); });
   var denom=(n-1)*(n-2);
   var centralization = denom>0 ? sumDiff/denom : 0;
   if(centralization>1) centralization=1;
@@ -464,6 +482,12 @@ function renderEntrar(code){
   wrap.appendChild(h("h1",{style:"font-size:30px;margin:14px 0 6px"},["Oficina Rede"]));
   wrap.appendChild(h("p",{class:"muted"},[currentSession.name||"Ciência das Redes para Fortalecer a Educação Ambiental"]));
   wrap.appendChild(phaseBanner());
+  wrap.appendChild(h("div",{style:"text-align:right;margin:-6px 0 10px"},[
+    h("button",{class:"small-link", style:"background:none;border:none;cursor:pointer;padding:0;font-family:inherit", onclick:function(){
+      toast("Atualizando…");
+      loadAll();
+    }},["↻ atualizar"])
+  ]));
 
   var myId=localId(code);
   var me=state.participants.find(function(p){return p.id===myId;});
@@ -727,7 +751,11 @@ function renderStage(code){
 
   var g=buildGraph();
   var metrics=computeMetrics(g);
+  // só calculada quando há laços hipotéticos registrados — é a base do
+  // comparativo "com e sem hipotéticos" mostrado mais abaixo
+  var metricsHyp = metrics.hypCount>0 ? computeMetrics(g,true) : null;
 
+  // ---- cabeçalho: título + QR/link de entrada ----
   var header=h("div",{style:"display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:16px;margin-bottom:6px"});
   header.appendChild(h("div",{},[
     h("h1",{style:"font-size:34px"},["Observatório da Sala"]),
@@ -746,11 +774,93 @@ function renderStage(code){
   header.appendChild(joinBox);
   wrap.appendChild(header);
 
+  // ---- controles do facilitador — no topo da página, antes do grafo ----
+  if(!isAdmin){
+    wrap.appendChild(renderLoginCard());
+  } else {
+    var admin=h("div",{class:"card"});
+    admin.appendChild(h("h3",{style:"font-size:15px;margin-bottom:10px"},["Controles do facilitador"]));
+    var seg=h("div",{class:"seg"});
+    ["coleta","exercicio","encerrado"].forEach(function(ph){
+      var label={coleta:"Coleta",exercicio:"Exercício",encerrado:"Encerrar"}[ph];
+      var b=h("button",{class: state.phase===ph?"active":"", onclick:function(){
+        if(state.phase===ph) return; // já está nessa fase
+        var previousPhase=currentSession.phase;
+        // atualização otimista: destaca a fase na hora, sem esperar o tempo
+        // real ir e voltar — se der erro, desfaz e avisa
+        currentSession.phase=ph; state.phase=ph; render();
+        sb.from("oficina_rede_sessions").update({phase:ph, updated_at:new Date().toISOString()}).eq("id",currentSession.id).then(function(res){
+          if(res.error){
+            currentSession.phase=previousPhase; state.phase=previousPhase; render();
+            toast("Erro ao mudar de fase: "+res.error.message);
+          }
+        });
+      }},[label]);
+      seg.appendChild(b);
+    });
+    admin.appendChild(seg);
+    admin.appendChild(h("div",{style:"height:10px"}));
+    var row=h("div",{class:"row"});
+    var exportBtn=h("button",{class:"btn secondary", onclick:function(){
+      var payload=JSON.stringify({oficina:currentSession, participants:state.participants, ties:state.ties, metrics:metrics}, null, 2);
+      var blob=new Blob([payload], {type:"application/json"});
+      var a=document.createElement("a");
+      a.href=URL.createObjectURL(blob);
+      a.download="oficina-rede-"+currentSession.code+"-"+Date.now()+".json";
+      document.body.appendChild(a); a.click(); a.remove();
+    }},["Exportar dados"]);
+    var resetBtn=h("button",{class:"btn danger", onclick:function(){
+      if(!confirm("Apagar os participantes e laços DESTA oficina ("+currentSession.code+")? Isso não pode ser desfeito.")) return;
+      Promise.all([
+        sb.from("oficina_rede_ties").delete().eq("session_id",currentSession.id),
+        sb.from("oficina_rede_participants").delete().eq("session_id",currentSession.id)
+      ]).then(function(results){
+        var err=results.find(function(r){return r.error;});
+        if(err){ toast("Erro: "+err.error.message); return; }
+        toast("Dados desta oficina apagados.");
+      });
+    }},["Zerar dados (teste)"]);
+    row.appendChild(exportBtn); row.appendChild(resetBtn);
+    admin.appendChild(row);
+    admin.appendChild(h("div",{style:"height:8px"}));
+    var deleteSessionBtn=h("button",{class:"btn danger", onclick:function(){
+      deleteSession(currentSession, deleteSessionBtn, function(err){
+        if(!err){
+          if(sessionChannel){ sb.removeChannel(sessionChannel); sessionChannel=null; }
+          currentSession=null;
+          location.hash="#palco";
+        }
+      });
+    }},["Excluir esta oficina"]);
+    admin.appendChild(deleteSessionBtn);
+    wrap.appendChild(admin);
+  }
+
+  // ---- layout do grafo (qualquer pessoa vendo o palco pode trocar — é só exibição) ----
+  var layoutBar=h("div",{style:"display:flex;align-items:center;gap:10px;margin:16px 0 10px;flex-wrap:wrap"},[
+    h("span",{class:"muted", style:"font-size:12px;letter-spacing:.06em;text-transform:uppercase"},["Organização do grafo:"])
+  ]);
+  var layoutSeg=h("div",{class:"seg", style:"width:auto"});
+  [["force","Força"],["circular","Circular"],["radial","Radial"]].forEach(function(pair){
+    var val=pair[0], lbl=pair[1];
+    var b=h("button",{class: graphLayout===val?"active":"", style:"flex:none;padding:8px 16px", onclick:function(){
+      if(graphLayout===val) return;
+      graphLayout=val;
+      render();
+    }},[lbl]);
+    layoutSeg.appendChild(b);
+  });
+  layoutBar.appendChild(layoutSeg);
+  wrap.appendChild(layoutBar);
+
+  // ---- grafo + painel lateral (métricas, legenda, detalhe do nó) ----
   var grid=h("div",{class:"stage-grid"});
   var graphBox=h("div",{class:"graph-box"});
   grid.appendChild(graphBox);
 
   var side=h("div",{});
+  var overviewCard=h("div",{class:"card"});
+  overviewCard.appendChild(h("h3",{style:"font-size:15px;margin-bottom:10px"},["Métricas da rede"]));
   var metricsGrid=h("div",{class:"metrics"});
   function metricEl(k,v,wide,hint){
     var kids=[h("div",{class:"k"},[k]), h("div",{class:"v"},[v])];
@@ -767,14 +877,47 @@ function renderStage(code){
   metricsGrid.appendChild(metricEl("Dependência", metrics.centralization.toFixed(2), true,
     "quanto a estrutura da rede depende de poucas pessoas centrais, em vez de estar distribuída"));
   metricsGrid.appendChild(metricEl("Laços hipotéticos", String(metrics.hypCount), true));
-  side.appendChild(metricsGrid);
-
-  side.appendChild(h("div",{class:"legend"},[
+  overviewCard.appendChild(metricsGrid);
+  overviewCard.appendChild(h("div",{style:"height:12px"}));
+  overviewCard.appendChild(h("div",{class:"legend"},[
     h("span",{},[h("span",{class:"dot",style:"background:var(--mint)"}), "pessoa na sala"]),
     h("span",{},[h("span",{class:"dot",style:"background:var(--dim)"}), "pessoa de fora"]),
     h("span",{},[h("span",{class:"lineSwatch",style:"border-color:var(--mint2)"}), "laço real"]),
     h("span",{},[h("span",{class:"lineSwatch",style:"border-color:var(--amber);border-top-style:dashed"}), "laço hipotético"])
   ]));
+  side.appendChild(overviewCard);
+
+  // comparativo "sem laços hipotéticos" vs "com laços hipotéticos" — duas
+  // áreas lado a lado, só aparece quando existe pelo menos um laço hipotético
+  if(metricsHyp){
+    var compareCard=h("div",{class:"card"});
+    compareCard.appendChild(h("h3",{style:"font-size:15px;margin-bottom:4px"},["Impacto dos laços hipotéticos"]));
+    compareCard.appendChild(h("p",{class:"muted", style:"font-size:12px;margin-bottom:10px"},
+      ["Compara a rede só com laços reais com a rede somando os laços hipotéticos — mostra o que mudaria se essas conexões imaginadas existissem de fato."]));
+    var cmpTable=h("div",{class:"cmp-table"});
+    cmpTable.appendChild(h("div",{class:"cmp-row cmp-head"},[
+      h("span",{},[""]), h("span",{},["Sem hipotéticos"]), h("span",{},["Com hipotéticos"])
+    ]));
+    var cmpRows=[
+      ["Laços", String(metrics.m), String(metricsHyp.m)],
+      ["Maior grupo", String(metrics.giantSize), String(metricsHyp.giantSize)],
+      ["Grupos", String(metrics.blocks), String(metricsHyp.blocks)],
+      ["Densidade", metrics.density.toFixed(2), metricsHyp.density.toFixed(2)],
+      ["Distância média", metrics.avgDist? metrics.avgDist.toFixed(2):"—", metricsHyp.avgDist? metricsHyp.avgDist.toFixed(2):"—"],
+      ["Laços críticos", String(metrics.bridges), String(metricsHyp.bridges)],
+      ["Dependência", metrics.centralization.toFixed(2), metricsHyp.centralization.toFixed(2)]
+    ];
+    cmpRows.forEach(function(r){
+      var changed = r[1]!==r[2];
+      cmpTable.appendChild(h("div",{class:"cmp-row"+(changed?" cmp-changed":"")},[
+        h("span",{class:"muted"},[r[0]]),
+        h("span",{},[r[1]]),
+        h("span",{},[r[2]])
+      ]));
+    });
+    compareCard.appendChild(cmpTable);
+    side.appendChild(compareCard);
+  }
 
   var nodeInfoBox=h("div",{class:"card"});
   function renderNodeInfo(key){
@@ -843,60 +986,6 @@ function renderStage(code){
   grid.insertBefore(graphBox, grid.firstChild);
   grid.appendChild(side);
 
-  // admin controls — visíveis só para quem estiver autenticado (o facilitador)
-  if(!isAdmin){
-    side.appendChild(renderLoginCard());
-  } else {
-    var admin=h("div",{class:"card"});
-    admin.appendChild(h("h3",{style:"font-size:15px;margin-bottom:10px"},["Controles do facilitador"]));
-    var seg=h("div",{class:"seg"});
-    ["coleta","exercicio","encerrado"].forEach(function(ph){
-      var label={coleta:"Coleta",exercicio:"Exercício",encerrado:"Encerrar"}[ph];
-      var b=h("button",{class: state.phase===ph?"active":"", onclick:function(){
-        sb.from("oficina_rede_sessions").update({phase:ph, updated_at:new Date().toISOString()}).eq("id",currentSession.id).then(function(res){
-          if(res.error) toast("Erro: "+res.error.message);
-        });
-      }},[label]);
-      seg.appendChild(b);
-    });
-    admin.appendChild(seg);
-    admin.appendChild(h("div",{style:"height:10px"}));
-    var row=h("div",{class:"row"});
-    var exportBtn=h("button",{class:"btn secondary", onclick:function(){
-      var payload=JSON.stringify({oficina:currentSession, participants:state.participants, ties:state.ties, metrics:metrics}, null, 2);
-      var blob=new Blob([payload], {type:"application/json"});
-      var a=document.createElement("a");
-      a.href=URL.createObjectURL(blob);
-      a.download="oficina-rede-"+currentSession.code+"-"+Date.now()+".json";
-      document.body.appendChild(a); a.click(); a.remove();
-    }},["Exportar dados"]);
-    var resetBtn=h("button",{class:"btn danger", onclick:function(){
-      if(!confirm("Apagar os participantes e laços DESTA oficina ("+currentSession.code+")? Isso não pode ser desfeito.")) return;
-      Promise.all([
-        sb.from("oficina_rede_ties").delete().eq("session_id",currentSession.id),
-        sb.from("oficina_rede_participants").delete().eq("session_id",currentSession.id)
-      ]).then(function(results){
-        var err=results.find(function(r){return r.error;});
-        if(err){ toast("Erro: "+err.error.message); return; }
-        toast("Dados desta oficina apagados.");
-      });
-    }},["Zerar dados (teste)"]);
-    row.appendChild(exportBtn); row.appendChild(resetBtn);
-    admin.appendChild(row);
-    admin.appendChild(h("div",{style:"height:8px"}));
-    var deleteSessionBtn=h("button",{class:"btn danger", onclick:function(){
-      deleteSession(currentSession, deleteSessionBtn, function(err){
-        if(!err){
-          if(sessionChannel){ sb.removeChannel(sessionChannel); sessionChannel=null; }
-          currentSession=null;
-          location.hash="#palco";
-        }
-      });
-    }},["Excluir esta oficina"]);
-    admin.appendChild(deleteSessionBtn);
-    side.appendChild(admin);
-  }
-
   // QR code
   if(window.QRCode){
     try{ new QRCode(qrHolder, {text:joinUrl, width:104, height:104, colorDark:"#0B2A45", colorLight:"#ffffff"}); }
@@ -908,10 +997,40 @@ function renderStage(code){
 
   drawGraph(graphBox, g, function(key){
     renderNodeInfo(key);
-  });
+  }, graphLayout);
 }
 
-function drawGraph(container, g, onNodeClick){
+// posiciona os nós para os layouts clássicos não-orgânicos: fixa x/y/fx/fy de
+// cada nó antes da simulação começar. Para "force", não mexe em nada — a
+// simulação orgânica de sempre decide as posições. Para "circular"/"radial",
+// os nós ficam pinados na posição calculada (ainda dá pra arrastar à mão,
+// igual já funciona em "force").
+function layoutPositions(nodeArr, layout, w, hgt){
+  var n=nodeArr.length;
+  if(n===0 || layout==="force") return;
+  var cx=w/2, cy=hgt/2;
+  var ordered=nodeArr.slice().sort(function(a,b){ return b.degree-a.degree || a.label.localeCompare(b.label); });
+  if(layout==="circular"){
+    var radius=Math.max(60, Math.min(w,hgt)*0.38);
+    ordered.forEach(function(d,i){
+      var angle=(i/n)*2*Math.PI - Math.PI/2;
+      d.x=d.fx=cx+radius*Math.cos(angle);
+      d.y=d.fy=cy+radius*Math.sin(angle);
+    });
+  } else if(layout==="radial"){
+    var maxDeg=0; nodeArr.forEach(function(d){ if(d.degree>maxDeg) maxDeg=d.degree; });
+    var minR=Math.max(40, Math.min(w,hgt)*0.1), maxR=Math.max(minR+60, Math.min(w,hgt)*0.42);
+    ordered.forEach(function(d,i){
+      var angle=(i/n)*2*Math.PI - Math.PI/2;
+      var ratio = maxDeg>0? d.degree/maxDeg : 0;
+      var r = maxR - (maxR-minR)*ratio; // quem tem mais laços fica mais perto do centro
+      d.x=d.fx=cx+r*Math.cos(angle);
+      d.y=d.fy=cy+r*Math.sin(angle);
+    });
+  }
+}
+
+function drawGraph(container, g, onNodeClick, layout){
   if(!window.d3){ container.innerHTML="<div class='muted' style='padding:20px'>Biblioteca de grafo indisponível.</div>"; return; }
   var w=container.clientWidth||800, hgt=container.clientHeight||600;
   var svg=d3.select(container).append("svg").attr("width",w).attr("height",hgt).attr("viewBox","0 0 "+w+" "+hgt);
@@ -931,6 +1050,8 @@ function drawGraph(container, g, onNodeClick){
       .text("Aguardando participantes…");
     return;
   }
+
+  layoutPositions(nodeArr, layout||"force", w, hgt);
 
   // everything pannable/zoomable lives inside "viewport"; defs/filters stay outside it
   var viewport=svg.append("g").attr("class","viewport");
