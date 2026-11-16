@@ -13,7 +13,7 @@
 <style>
   :root{
     --night:#0B2A45; --deep:#030a16; --ink:#fff; --ink-soft:#B9CBDD;
-    --mint:#5FE0C6; --mint2:#9BF3DC; --amber:#FFC24D; --dim:#3f6f86;
+    --mint:#5FE0C6; --mint2:#9BF3DC; --amber:#FFC24D; --dim:#3f6f86; --indic:#B9A6FF;
     --display:"Anton",system-ui,sans-serif; --body:"Poppins",system-ui,sans-serif;
   }
   *{box-sizing:border-box}
@@ -85,7 +85,7 @@
   .legend span{display:inline-flex; align-items:center; gap:6px}
   .dot{width:9px;height:9px;border-radius:50%;display:inline-block}
   .dot.outline{background:transparent; border:1.5px dashed var(--ink-soft); box-sizing:border-box}
-  .dot.declared{background:var(--mint); border:1.5px solid rgba(255,255,255,.65); box-sizing:border-box}
+  .dot.declared{background:var(--indic)}
   .cmp-table{display:flex; flex-direction:column; gap:2px}
   .cmp-row{display:grid; grid-template-columns:1.3fr 1fr 1fr; gap:8px; align-items:center; padding:7px 0; border-bottom:1px solid rgba(146,235,208,.08); font-size:13px}
   .cmp-row:last-child{border-bottom:none}
@@ -1226,31 +1226,29 @@ function drawGraph(container, g, onNodeClick, layout){
     .style("cursor","pointer");
 
   // três níveis de presença, coerentes com a dinâmica da oficina (nem todo
-  // mundo tem celular na mão): "confirmado" (entrou pelo próprio #entrar) —
-  // bolinha cheia com brilho; "indicado" (alguém da sala marcou "Nesta sala"
-  // ao lançar um laço para essa pessoa, mas ela mesma não entrou) — bolinha
-  // cheia, sem brilho, com um anel branco fino; "fora" (declarado fora, ou
-  // nunca mencionado como presente) — bolinha vazada, borda tracejada, nome
-  // em itálico. Tudo isso dá pra ler à distância, sem abrir a legenda.
+  // mundo tem celular na mão), diferenciados por COR (sem poluir o nome com
+  // tag): "confirmado" (entrou pelo próprio #entrar) — verde-água, com
+  // brilho; "indicado" (alguém da sala marcou "Nesta sala" ao lançar um laço
+  // para essa pessoa, mas ela mesma não entrou) — lilás, sem brilho; "fora"
+  // (declarado fora, ou nunca mencionado como presente) — bolinha vazada,
+  // borda tracejada, nome em itálico + "(fora)" (esse sim precisa do texto,
+  // já que é quase invisível).
   function presenceOf(d){ return d.selfJoined? "confirmed" : (d.inRoom? "declared" : "out"); }
+  function presenceFill(d){
+    var p=presenceOf(d);
+    return p==="confirmed"? "#5FE0C6" : (p==="declared"? "#B9A6FF" : "rgba(63,111,134,.3)");
+  }
 
   node.append("circle")
     .attr("r", rOf)
-    .attr("fill", function(d){ return presenceOf(d)==="out"? "rgba(63,111,134,.3)" : "#5FE0C6"; })
+    .attr("fill", presenceFill)
     .attr("filter", function(d){ return presenceOf(d)==="confirmed"? "url(#nodeglow)" : null; })
-    .attr("stroke", function(d){
-      var p=presenceOf(d);
-      return p==="confirmed"? "none" : (p==="declared"? "#fff" : "#B9CBDD");
-    })
-    .attr("stroke-width", function(d){ return presenceOf(d)==="confirmed"? 0 : 1.6; })
-    .attr("stroke-opacity", function(d){ return presenceOf(d)==="declared"? .6 : 1; })
+    .attr("stroke", function(d){ return presenceOf(d)==="out"? "#B9CBDD" : "none"; })
+    .attr("stroke-width", function(d){ return presenceOf(d)==="out"? 1.6 : 0; })
     .attr("stroke-dasharray", function(d){ return presenceOf(d)==="out"? "4 3" : null; });
 
   node.append("text")
-    .text(function(d){
-      var p=presenceOf(d);
-      return d.label + (p==="declared"? " (indicado)" : (p==="out"? " (fora)" : ""));
-    })
+    .text(function(d){ return d.label + (presenceOf(d)==="out"? " (fora)" : ""); })
     .attr("text-anchor","middle")
     .attr("dy", function(d){ return -(14+Math.min(14,d.degree*2.5)); })
     .attr("fill", function(d){ return presenceOf(d)==="confirmed"? "#fff" : "#B9CBDD"; })
@@ -1290,13 +1288,8 @@ function drawGraph(container, g, onNodeClick, layout){
     if(d.__dragged){ d.__dragged=false; return; }
     event.stopPropagation();
     node.select("circle")
-      .attr("stroke", function(dd){
-        if(dd.key===d.key) return "#FFC24D";
-        var p=presenceOf(dd);
-        return p==="confirmed"? "none" : (p==="declared"? "#fff" : "#B9CBDD");
-      })
-      .attr("stroke-width", function(dd){ return dd.key===d.key? 3 : (presenceOf(dd)==="confirmed"? 0 : 1.6); })
-      .attr("stroke-opacity", function(dd){ return dd.key===d.key? 1 : (presenceOf(dd)==="declared"? .6 : 1); })
+      .attr("stroke", function(dd){ return dd.key===d.key? "#FFC24D" : (presenceOf(dd)==="out"? "#B9CBDD" : "none"); })
+      .attr("stroke-width", function(dd){ return dd.key===d.key? 3 : (presenceOf(dd)==="out"? 1.6 : 0); })
       .attr("stroke-dasharray", function(dd){ return dd.key===d.key? null : (presenceOf(dd)==="out"? "4 3" : null); });
     if(typeof onNodeClick==="function") onNodeClick(d.key);
   });
