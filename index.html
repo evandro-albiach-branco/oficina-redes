@@ -84,6 +84,7 @@
   .legend{display:flex; gap:16px; font-size:12px; color:var(--ink-soft); flex-wrap:wrap; margin-top:10px}
   .legend span{display:inline-flex; align-items:center; gap:6px}
   .dot{width:9px;height:9px;border-radius:50%;display:inline-block}
+  .dot.outline{background:transparent; border:1.5px dashed var(--ink-soft); box-sizing:border-box}
   .cmp-table{display:flex; flex-direction:column; gap:2px}
   .cmp-row{display:grid; grid-template-columns:1.3fr 1fr 1fr; gap:8px; align-items:center; padding:7px 0; border-bottom:1px solid rgba(146,235,208,.08); font-size:13px}
   .cmp-row:last-child{border-bottom:none}
@@ -889,7 +890,7 @@ function renderStage(code){
   overviewCard.appendChild(h("div",{style:"height:12px"}));
   overviewCard.appendChild(h("div",{class:"legend"},[
     h("span",{},[h("span",{class:"dot",style:"background:var(--mint)"}), "pessoa na sala"]),
-    h("span",{},[h("span",{class:"dot",style:"background:var(--dim)"}), "pessoa de fora"]),
+    h("span",{},[h("span",{class:"dot outline"}), "pessoa de fora (citada, não entrou)"]),
     h("span",{},[h("span",{class:"lineSwatch",style:"border-color:var(--mint2)"}), "laço real"]),
     h("span",{},[h("span",{class:"lineSwatch",style:"border-color:var(--amber);border-top-style:dashed"}), "laço hipotético"])
   ]));
@@ -1213,18 +1214,29 @@ function drawGraph(container, g, onNodeClick, layout){
   var node=viewport.append("g").selectAll("g").data(nodeArr).enter().append("g")
     .style("cursor","pointer");
 
+  // quem está na sala: bolinha cheia, com brilho. quem está fora (só foi
+  // citado por outra pessoa, nunca entrou): bolinha vazada, borda tracejada,
+  // sem brilho, nome em itálico — o mesmo código visual do laço hipotético
+  // (tracejado = "não confirmado/presente"), pra ficar óbvio à distância,
+  // sem precisar conferir a legenda
+  function strokeOf(d){ return d.inRoom? "none" : "#B9CBDD"; }
+  function strokeWidthOf(d){ return d.inRoom? 0 : 1.6; }
+
   node.append("circle")
     .attr("r", rOf)
-    .attr("fill", function(d){ return d.inRoom? "#5FE0C6" : "#3f6f86"; })
-    .attr("filter","url(#nodeglow)")
-    .attr("stroke","none").attr("stroke-width",0);
+    .attr("fill", function(d){ return d.inRoom? "#5FE0C6" : "rgba(63,111,134,.3)"; })
+    .attr("filter", function(d){ return d.inRoom? "url(#nodeglow)" : null; })
+    .attr("stroke", strokeOf)
+    .attr("stroke-width", strokeWidthOf)
+    .attr("stroke-dasharray", function(d){ return d.inRoom? null : "4 3"; });
 
   node.append("text")
-    .text(function(d){ return d.label; })
+    .text(function(d){ return d.label + (d.inRoom? "" : " (fora)"); })
     .attr("text-anchor","middle")
     .attr("dy", function(d){ return -(14+Math.min(14,d.degree*2.5)); })
-    .attr("fill","#fff")
+    .attr("fill", function(d){ return d.inRoom? "#fff" : "#B9CBDD"; })
     .attr("font-family","Poppins").attr("font-weight","600")
+    .attr("font-style", function(d){ return d.inRoom? "normal" : "italic"; })
     .attr("font-size","12px")
     .style("pointer-events","none");
 
@@ -1259,8 +1271,9 @@ function drawGraph(container, g, onNodeClick, layout){
     if(d.__dragged){ d.__dragged=false; return; }
     event.stopPropagation();
     node.select("circle")
-      .attr("stroke", function(dd){ return dd.key===d.key? "#FFC24D":"none"; })
-      .attr("stroke-width", function(dd){ return dd.key===d.key? 3:0; });
+      .attr("stroke", function(dd){ return dd.key===d.key? "#FFC24D" : strokeOf(dd); })
+      .attr("stroke-width", function(dd){ return dd.key===d.key? 3 : strokeWidthOf(dd); })
+      .attr("stroke-dasharray", function(dd){ return dd.key===d.key? null : (dd.inRoom? null : "4 3"); });
     if(typeof onNodeClick==="function") onNodeClick(d.key);
   });
 
