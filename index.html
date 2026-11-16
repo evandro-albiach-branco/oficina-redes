@@ -85,6 +85,7 @@
   .legend span{display:inline-flex; align-items:center; gap:6px}
   .dot{width:9px;height:9px;border-radius:50%;display:inline-block}
   .dot.outline{background:transparent; border:1.5px dashed var(--ink-soft); box-sizing:border-box}
+  .dot.declared{background:var(--mint); border:1.5px solid rgba(255,255,255,.65); box-sizing:border-box}
   .cmp-table{display:flex; flex-direction:column; gap:2px}
   .cmp-row{display:grid; grid-template-columns:1.3fr 1fr 1fr; gap:8px; align-items:center; padding:7px 0; border-bottom:1px solid rgba(146,235,208,.08); font-size:13px}
   .cmp-row:last-child{border-bottom:none}
@@ -229,27 +230,36 @@ function knownNames(){
 }
 
 // ---------- graph + metrics ----------
+// presença de cada pessoa tem duas fontes, por desenho da dinâmica da oficina:
+// 1) "selfJoined" — ela mesma entrou pelo próprio celular (#entrar)
+// 2) "declaredPresent" — alguém que já está na sala, ao lançar um laço,
+//    marcou explicitamente "Nesta sala" para essa pessoa (em vez de "Fora
+//    da sala") — isso também conta como presença confirmada, já que nem
+//    todo mundo numa oficina presencial vai ter o próprio celular na mão
 function buildGraph(){
-  var nodes={}; // key -> {key,label,inRoom,degree}
+  var nodes={}; // key -> {key,label,selfJoined,declaredPresent,inRoom,degree}
   var edgeMap={}; // "a|b" sorted -> {a,b,real,hyp}
   function ensure(label){
     var k=normName(label);
     if(!k) return null;
-    if(!nodes[k]) nodes[k]={key:k,label:label.trim(),inRoom:false,degree:0};
+    if(!nodes[k]) nodes[k]={key:k,label:label.trim(),selfJoined:false,declaredPresent:false,inRoom:false,degree:0};
     return k;
   }
   state.participants.forEach(function(p){
     var k=ensure(p.name);
-    if(k) nodes[k].inRoom=true;
+    if(k) nodes[k].selfJoined=true;
   });
   state.ties.forEach(function(t){
     var a=ensure(t.fromName||"");
     var b=ensure(t.to||"");
     if(!a||!b||a===b) return;
-    if(!t.external){ /* target claimed to be in room; still don't force inRoom flag from a guess */ }
+    if(!t.external) nodes[b].declaredPresent=true; // alguém da sala confirmou que esta pessoa também está presente
     var pairKey = a<b ? a+"|"+b : b+"|"+a;
     if(!edgeMap[pairKey]) edgeMap[pairKey]={a:a,b:b,real:false,hyp:false};
     if(t.hypothetical) edgeMap[pairKey].hyp=true; else edgeMap[pairKey].real=true;
+  });
+  Object.keys(nodes).forEach(function(k){
+    nodes[k].inRoom = nodes[k].selfJoined || nodes[k].declaredPresent;
   });
   var edges=Object.keys(edgeMap).map(function(k){ return edgeMap[k]; });
   // degree counted on real edges only (structural reading)
@@ -372,7 +382,7 @@ function nodeDetails(key, g, metrics){
     if(t.external && normName(t.fromName||"")===key) externalCount++;
   });
   return {
-    label:node.label, inRoom:node.inRoom, degree:node.degree,
+    label:node.label, inRoom:node.inRoom, selfJoined:node.selfJoined, degree:node.degree,
     hypDeg:hypDeg, bridgeDeg:bridgeDeg, compSize:compSize,
     isGiant: compIdx===metrics.giantIdx, externalCount:externalCount
   };
@@ -889,8 +899,9 @@ function renderStage(code){
   overviewCard.appendChild(metricsGrid);
   overviewCard.appendChild(h("div",{style:"height:12px"}));
   overviewCard.appendChild(h("div",{class:"legend"},[
-    h("span",{},[h("span",{class:"dot",style:"background:var(--mint)"}), "pessoa na sala"]),
-    h("span",{},[h("span",{class:"dot outline"}), "pessoa de fora (citada, não entrou)"]),
+    h("span",{},[h("span",{class:"dot",style:"background:var(--mint)"}), "na sala (confirmou pelo celular)"]),
+    h("span",{},[h("span",{class:"dot declared"}), "na sala (indicado por outra pessoa)"]),
+    h("span",{},[h("span",{class:"dot outline"}), "pessoa de fora"]),
     h("span",{},[h("span",{class:"lineSwatch",style:"border-color:var(--mint2)"}), "laço real"]),
     h("span",{},[h("span",{class:"lineSwatch",style:"border-color:var(--amber);border-top-style:dashed"}), "laço hipotético"])
   ]));
@@ -943,7 +954,7 @@ function renderStage(code){
     }
     var rows=[
       ["Nome", d.label],
-      ["Status", d.inRoom? "Na sala":"Pessoa de fora"],
+      ["Status", d.selfJoined? "Na sala (confirmou pelo próprio celular)" : (d.inRoom? "Na sala (indicado por outra pessoa)" : "Pessoa de fora")],
       ["Grau (laços reais)", String(d.degree)],
       ["Grupo", d.compSize? (d.isGiant? "Maior grupo ("+d.compSize+" pessoas)" : "Grupo de "+d.compSize+(d.compSize>1?" pessoas":" pessoa")) : "—"],
       ["Laços críticos aqui", String(d.bridgeDeg)],
@@ -1214,29 +1225,37 @@ function drawGraph(container, g, onNodeClick, layout){
   var node=viewport.append("g").selectAll("g").data(nodeArr).enter().append("g")
     .style("cursor","pointer");
 
-  // quem está na sala: bolinha cheia, com brilho. quem está fora (só foi
-  // citado por outra pessoa, nunca entrou): bolinha vazada, borda tracejada,
-  // sem brilho, nome em itálico — o mesmo código visual do laço hipotético
-  // (tracejado = "não confirmado/presente"), pra ficar óbvio à distância,
-  // sem precisar conferir a legenda
-  function strokeOf(d){ return d.inRoom? "none" : "#B9CBDD"; }
-  function strokeWidthOf(d){ return d.inRoom? 0 : 1.6; }
+  // três níveis de presença, coerentes com a dinâmica da oficina (nem todo
+  // mundo tem celular na mão): "confirmado" (entrou pelo próprio #entrar) —
+  // bolinha cheia com brilho; "indicado" (alguém da sala marcou "Nesta sala"
+  // ao lançar um laço para essa pessoa, mas ela mesma não entrou) — bolinha
+  // cheia, sem brilho, com um anel branco fino; "fora" (declarado fora, ou
+  // nunca mencionado como presente) — bolinha vazada, borda tracejada, nome
+  // em itálico. Tudo isso dá pra ler à distância, sem abrir a legenda.
+  function presenceOf(d){ return d.selfJoined? "confirmed" : (d.inRoom? "declared" : "out"); }
 
   node.append("circle")
     .attr("r", rOf)
-    .attr("fill", function(d){ return d.inRoom? "#5FE0C6" : "rgba(63,111,134,.3)"; })
-    .attr("filter", function(d){ return d.inRoom? "url(#nodeglow)" : null; })
-    .attr("stroke", strokeOf)
-    .attr("stroke-width", strokeWidthOf)
-    .attr("stroke-dasharray", function(d){ return d.inRoom? null : "4 3"; });
+    .attr("fill", function(d){ return presenceOf(d)==="out"? "rgba(63,111,134,.3)" : "#5FE0C6"; })
+    .attr("filter", function(d){ return presenceOf(d)==="confirmed"? "url(#nodeglow)" : null; })
+    .attr("stroke", function(d){
+      var p=presenceOf(d);
+      return p==="confirmed"? "none" : (p==="declared"? "#fff" : "#B9CBDD");
+    })
+    .attr("stroke-width", function(d){ return presenceOf(d)==="confirmed"? 0 : 1.6; })
+    .attr("stroke-opacity", function(d){ return presenceOf(d)==="declared"? .6 : 1; })
+    .attr("stroke-dasharray", function(d){ return presenceOf(d)==="out"? "4 3" : null; });
 
   node.append("text")
-    .text(function(d){ return d.label + (d.inRoom? "" : " (fora)"); })
+    .text(function(d){
+      var p=presenceOf(d);
+      return d.label + (p==="declared"? " (indicado)" : (p==="out"? " (fora)" : ""));
+    })
     .attr("text-anchor","middle")
     .attr("dy", function(d){ return -(14+Math.min(14,d.degree*2.5)); })
-    .attr("fill", function(d){ return d.inRoom? "#fff" : "#B9CBDD"; })
+    .attr("fill", function(d){ return presenceOf(d)==="confirmed"? "#fff" : "#B9CBDD"; })
     .attr("font-family","Poppins").attr("font-weight","600")
-    .attr("font-style", function(d){ return d.inRoom? "normal" : "italic"; })
+    .attr("font-style", function(d){ return presenceOf(d)==="out"? "italic" : "normal"; })
     .attr("font-size","12px")
     .style("pointer-events","none");
 
@@ -1271,9 +1290,14 @@ function drawGraph(container, g, onNodeClick, layout){
     if(d.__dragged){ d.__dragged=false; return; }
     event.stopPropagation();
     node.select("circle")
-      .attr("stroke", function(dd){ return dd.key===d.key? "#FFC24D" : strokeOf(dd); })
-      .attr("stroke-width", function(dd){ return dd.key===d.key? 3 : strokeWidthOf(dd); })
-      .attr("stroke-dasharray", function(dd){ return dd.key===d.key? null : (dd.inRoom? null : "4 3"); });
+      .attr("stroke", function(dd){
+        if(dd.key===d.key) return "#FFC24D";
+        var p=presenceOf(dd);
+        return p==="confirmed"? "none" : (p==="declared"? "#fff" : "#B9CBDD");
+      })
+      .attr("stroke-width", function(dd){ return dd.key===d.key? 3 : (presenceOf(dd)==="confirmed"? 0 : 1.6); })
+      .attr("stroke-opacity", function(dd){ return dd.key===d.key? 1 : (presenceOf(dd)==="declared"? .6 : 1); })
+      .attr("stroke-dasharray", function(dd){ return dd.key===d.key? null : (presenceOf(dd)==="out"? "4 3" : null); });
     if(typeof onNodeClick==="function") onNodeClick(d.key);
   });
 
