@@ -62,9 +62,15 @@
   .phase-banner.encerrado{background:rgba(185,203,221,.1); color:var(--ink-soft); border:1px solid rgba(185,203,221,.2)}
   .muted{color:var(--ink-soft); font-size:14px; line-height:1.5}
   .center{text-align:center}
-  .stage-grid{display:grid; grid-template-columns:1fr 340px; gap:22px; align-items:start}
+  .stage-grid{display:grid; grid-template-columns:1fr 360px; gap:22px; align-items:start}
   @media (max-width:980px){.stage-grid{grid-template-columns:1fr}}
   .graph-box{background:rgba(255,255,255,.03); border:1px solid rgba(146,235,208,.14); border-radius:18px; overflow:hidden; position:relative; height:min(72vh,780px)}
+  .side-sticky{position:sticky; top:16px; height:min(72vh,780px); display:flex; flex-direction:column; min-height:0}
+  @media (max-width:980px){.side-sticky{position:static; height:auto}}
+  .side-tabs{flex:none}
+  .side-panels{flex:1; min-height:0; overflow-y:auto; padding-right:2px}
+  .side-panels .card{margin-top:0}
+  .side-panels .card+.card{margin-top:16px}
   .graph-hint{position:absolute; bottom:10px; left:14px; font-size:11px; color:var(--ink-soft); opacity:.55; pointer-events:none}
   .metrics{display:grid; grid-template-columns:1fr 1fr; gap:10px}
   .metric{background:rgba(255,255,255,.04); border:1px solid rgba(146,235,208,.14); border-radius:12px; padding:12px}
@@ -858,7 +864,9 @@ function renderStage(code){
   var graphBox=h("div",{class:"graph-box"});
   grid.appendChild(graphBox);
 
-  var side=h("div",{});
+  var side=h("div",{class:"side-sticky"});
+  var sideTabs=h("div",{class:"seg side-tabs", style:"margin-bottom:12px"});
+  var sidePanels=h("div",{class:"side-panels"});
   var overviewCard=h("div",{class:"card"});
   overviewCard.appendChild(h("h3",{style:"font-size:15px;margin-bottom:10px"},["Métricas da rede"]));
   var metricsGrid=h("div",{class:"metrics"});
@@ -885,7 +893,7 @@ function renderStage(code){
     h("span",{},[h("span",{class:"lineSwatch",style:"border-color:var(--mint2)"}), "laço real"]),
     h("span",{},[h("span",{class:"lineSwatch",style:"border-color:var(--amber);border-top-style:dashed"}), "laço hipotético"])
   ]));
-  side.appendChild(overviewCard);
+  sidePanels.appendChild(overviewCard);
 
   // comparativo "sem laços hipotéticos" vs "com laços hipotéticos" — duas
   // áreas lado a lado, só aparece quando existe pelo menos um laço hipotético
@@ -916,7 +924,7 @@ function renderStage(code){
       ]));
     });
     compareCard.appendChild(cmpTable);
-    side.appendChild(compareCard);
+    sidePanels.appendChild(compareCard);
   }
 
   var nodeInfoBox=h("div",{class:"card"});
@@ -980,7 +988,31 @@ function renderStage(code){
     }
   }
   renderNodeInfo(null);
-  side.appendChild(nodeInfoBox);
+  sidePanels.appendChild(nodeInfoBox);
+
+  // ---- abas do painel lateral: cada card fica inteiro visível junto do grafo,
+  // sem precisar descer a página — só uma aba por vez, com rolagem própria ----
+  var sideTabDefs=[["metrics","Métricas",overviewCard]];
+  if(metricsHyp) sideTabDefs.push(["compare","Comparar",compareCard]);
+  sideTabDefs.push(["node","Nó",nodeInfoBox]);
+  var activeSideTab="metrics";
+  function showSideTab(name){
+    activeSideTab=name;
+    sideTabDefs.forEach(function(t){
+      t[2].style.display = (t[0]===name) ? "" : "none";
+    });
+    Array.prototype.forEach.call(sideTabs.children, function(btn,i){
+      btn.className = "" + (sideTabDefs[i][0]===name ? "active" : "");
+    });
+    sidePanels.scrollTop=0;
+  }
+  sideTabDefs.forEach(function(t){
+    sideTabs.appendChild(h("button",{onclick:function(){ showSideTab(t[0]); }},[t[1]]));
+  });
+  showSideTab(activeSideTab);
+
+  side.appendChild(sideTabs);
+  side.appendChild(sidePanels);
 
   wrap.appendChild(grid);
   grid.insertBefore(graphBox, grid.firstChild);
@@ -997,6 +1029,7 @@ function renderStage(code){
 
   drawGraph(graphBox, g, function(key){
     renderNodeInfo(key);
+    showSideTab("node");
   }, graphLayout);
 }
 
