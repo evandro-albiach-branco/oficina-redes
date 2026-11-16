@@ -1038,27 +1038,124 @@ function renderStage(code){
 // simulação orgânica de sempre decide as posições. Para "circular"/"radial",
 // os nós ficam pinados na posição calculada (ainda dá pra arrastar à mão,
 // igual já funciona em "force").
-function layoutPositions(nodeArr, layout, w, hgt){
+// adjacência só com laços reais (mesmo critério do grau estrutural) — usada
+// para agrupar/organizar os layouts "Circular" e "Radial" por quem está de
+// fato ligado a quem, não por acaso de laços hipotéticos
+function buildRealAdjacency(nodeArr, linkArr){
+  var adj={};
+  nodeArr.forEach(function(d){ adj[d.key]=[]; });
+  linkArr.forEach(function(e){
+    if(!e.real) return;
+    if(adj[e.source] && adj[e.target]){ adj[e.source].push(e.target); adj[e.target].push(e.source); }
+  });
+  return adj;
+}
+
+// componentes conectados (grupos) a partir da adjacência — para agrupar nós
+// do mesmo grupo lado a lado, em vez de espalhar tudo ao acaso
+function connectedComponents(nodeArr, adj){
+  var compOf={}, comps=[];
+  nodeArr.forEach(function(d){
+    if(compOf[d.key]!=null) return;
+    var idx=comps.length, queue=[d.key], members=[];
+    compOf[d.key]=idx;
+    while(queue.length){
+      var k=queue.shift(); members.push(k);
+      (adj[k]||[]).forEach(function(nb){
+        if(compOf[nb]==null){ compOf[nb]=idx; queue.push(nb); }
+      });
+    }
+    comps.push(members);
+  });
+  return comps;
+}
+
+// árvore radial por distância (BFS) a partir de um nó-hub: cada "anel" é uma
+// distância de laços até o hub, e os nós de cada anel ficam dentro da fatia
+// angular herdada do pai — é o espírito do Radial Axis Layout do Gephi
+function radialTreePositions(members, adj, hubKey, cx, cy, maxRadius){
+  var inGroup={}; members.forEach(function(k){ inGroup[k]=true; });
+  var dist={}, parent={}, order=[hubKey];
+  dist[hubKey]=0; parent[hubKey]=null;
+  for(var qi=0; qi<order.length; qi++){
+    var cur=order[qi];
+    (adj[cur]||[]).forEach(function(nb){
+      if(inGroup[nb] && dist[nb]==null){ dist[nb]=dist[cur]+1; parent[nb]=cur; order.push(nb); }
+    });
+  }
+  var maxRing=0; order.forEach(function(k){ if(dist[k]>maxRing) maxRing=dist[k]; });
+  var ringGap = maxRing>0 ? maxRadius/maxRing : maxRadius;
+  var wedge={}; wedge[hubKey]={start:0,end:2*Math.PI};
+  var pos={}; pos[hubKey]={x:cx,y:cy};
+  for(var r=1;r<=maxRing;r++){
+    var byParent={};
+    order.forEach(function(k){
+      if(dist[k]===r){ var p=parent[k]; (byParent[p]=byParent[p]||[]).push(k); }
+    });
+    Object.keys(byParent).forEach(function(p){
+      var kids=byParent[p], pw=wedge[p]||{start:0,end:2*Math.PI};
+      var span=pw.end-pw.start, step=span/kids.length;
+      kids.forEach(function(k,i){
+        var a0=pw.start+i*step, a1=a0+step, ang=(a0+a1)/2;
+        wedge[k]={start:a0,end:a1};
+        var rad=r*ringGap;
+        pos[k]={x:cx+rad*Math.cos(ang-Math.PI/2), y:cy+rad*Math.sin(ang-Math.PI/2)};
+      });
+    });
+  }
+  return pos;
+}
+
+function layoutPositions(nodeArr, linkArr, layout, w, hgt){
   var n=nodeArr.length;
   if(n===0 || layout==="force") return;
   var cx=w/2, cy=hgt/2;
-  var ordered=nodeArr.slice().sort(function(a,b){ return b.degree-a.degree || a.label.localeCompare(b.label); });
+  var byKey={}; nodeArr.forEach(function(d){ byKey[d.key]=d; });
+  var adj=buildRealAdjacency(nodeArr, linkArr);
+  var comps=connectedComponents(nodeArr, adj)
+    .sort(function(a,b){ return b.length-a.length; });
+
   if(layout==="circular"){
+    // agrupa por grupo conectado (maior grupo primeiro) e, dentro de cada
+    // grupo, por quem tem mais laços — grupos ficam em arcos contíguos
+    var order=[];
+    comps.forEach(function(members){
+      members.map(function(k){ return byKey[k]; })
+        .sort(function(a,b){ return b.degree-a.degree || a.label.localeCompare(b.label); })
+        .forEach(function(d){ order.push(d); });
+    });
     var radius=Math.max(60, Math.min(w,hgt)*0.38);
-    ordered.forEach(function(d,i){
+    order.forEach(function(d,i){
       var angle=(i/n)*2*Math.PI - Math.PI/2;
       d.x=d.fx=cx+radius*Math.cos(angle);
       d.y=d.fy=cy+radius*Math.sin(angle);
     });
   } else if(layout==="radial"){
-    var maxDeg=0; nodeArr.forEach(function(d){ if(d.degree>maxDeg) maxDeg=d.degree; });
-    var minR=Math.max(40, Math.min(w,hgt)*0.1), maxR=Math.max(minR+60, Math.min(w,hgt)*0.42);
-    ordered.forEach(function(d,i){
-      var angle=(i/n)*2*Math.PI - Math.PI/2;
-      var ratio = maxDeg>0? d.degree/maxDeg : 0;
-      var r = maxR - (maxR-minR)*ratio; // quem tem mais laços fica mais perto do centro
-      d.x=d.fx=cx+r*Math.cos(angle);
-      d.y=d.fy=cy+r*Math.sin(angle);
+    // grupo principal: árvore radial a partir do nó com mais laços reais,
+    // em anéis por distância. Grupos menores (ou pessoas isoladas) orbitam
+    // como satélites ao redor, cada um com sua própria mini-árvore radial
+    var mainRadius=Math.max(80, Math.min(w,hgt)*0.42);
+    var mainComp=comps[0]||[];
+    if(mainComp.length){
+      var hub=mainComp.map(function(k){return byKey[k];})
+        .sort(function(a,b){ return b.degree-a.degree || a.label.localeCompare(b.label); })[0];
+      var mainPos=radialTreePositions(mainComp, adj, hub.key, cx, cy, mainRadius);
+      mainComp.forEach(function(k){
+        var p=mainPos[k]; byKey[k].x=byKey[k].fx=p.x; byKey[k].y=byKey[k].fy=p.y;
+      });
+    }
+    var satellites=comps.slice(1);
+    var satRadius=Math.min(w,hgt)*0.14;
+    var satOrbit=mainRadius + satRadius + 46;
+    satellites.forEach(function(members, i){
+      var angle=(i/Math.max(1,satellites.length))*2*Math.PI - Math.PI/2;
+      var scx=cx+satOrbit*Math.cos(angle), scy=cy+satOrbit*Math.sin(angle);
+      var subHub=members.map(function(k){return byKey[k];})
+        .sort(function(a,b){ return b.degree-a.degree || a.label.localeCompare(b.label); })[0];
+      var subPos=radialTreePositions(members, adj, subHub.key, scx, scy, satRadius);
+      members.forEach(function(k){
+        var p=subPos[k]; byKey[k].x=byKey[k].fx=p.x; byKey[k].y=byKey[k].fy=p.y;
+      });
     });
   }
 }
@@ -1084,16 +1181,28 @@ function drawGraph(container, g, onNodeClick, layout){
     return;
   }
 
-  layoutPositions(nodeArr, layout||"force", w, hgt);
+  layoutPositions(nodeArr, linkArr, layout||"force", w, hgt);
 
   // everything pannable/zoomable lives inside "viewport"; defs/filters stay outside it
   var viewport=svg.append("g").attr("class","viewport");
 
+  // simulação no estilo ForceAtlas2 (o layout "orgânico" padrão do Gephi):
+  // repulsão mais forte em quem tem mais laços (hubs abrem espaço ao redor),
+  // uma gravidade fraca (em vez de recentralizar a massa a cada tick) puxando
+  // tudo de volta para o meio, e menos decaimento para espalhar melhor antes
+  // de assentar. Nós travados pelos layouts Circular/Radial (fx/fy) ignoram
+  // essas forças normalmente.
+  function rOf(d){ return 9+Math.min(14,d.degree*2.5); }
   var sim=d3.forceSimulation(nodeArr)
-    .force("link", d3.forceLink(linkArr).id(function(d){return d.key;}).distance(90).strength(0.5))
-    .force("charge", d3.forceManyBody().strength(-170))
-    .force("center", d3.forceCenter(w/2, hgt/2))
-    .force("collide", d3.forceCollide(26));
+    .force("link", d3.forceLink(linkArr).id(function(d){return d.key;})
+      .distance(function(l){ return l.hyp? 130 : 85; })
+      .strength(function(l){ return l.hyp? 0.2 : 0.5; }))
+    .force("charge", d3.forceManyBody().strength(function(d){ return -220-d.degree*55; }).distanceMax(700))
+    .force("x", d3.forceX(w/2).strength(0.025))
+    .force("y", d3.forceY(hgt/2).strength(0.025))
+    .force("collide", d3.forceCollide(function(d){ return rOf(d)+14; }).iterations(2))
+    .alphaDecay(0.015)
+    .velocityDecay(0.35);
 
   var link=viewport.append("g").selectAll("line").data(linkArr).enter().append("line")
     .attr("stroke", function(d){ return d.hyp? "#FFC24D" : "#5FE0C6"; })
@@ -1103,8 +1212,6 @@ function drawGraph(container, g, onNodeClick, layout){
 
   var node=viewport.append("g").selectAll("g").data(nodeArr).enter().append("g")
     .style("cursor","pointer");
-
-  function rOf(d){ return 9+Math.min(14,d.degree*2.5); }
 
   node.append("circle")
     .attr("r", rOf)
