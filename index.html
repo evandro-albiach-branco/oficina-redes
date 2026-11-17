@@ -108,6 +108,9 @@
   .crit-item .why{font-size:12px; color:var(--ink-soft); margin-top:3px; line-height:1.35}
   .chip{display:inline-flex; align-items:center; gap:4px; background:rgba(255,194,77,.15); color:var(--amber); border-radius:999px; padding:3px 4px 3px 10px; margin:3px 4px 3px 0; font-size:12px}
   .chip button{background:transparent; border:none; color:var(--amber); cursor:pointer; font-size:14px; padding:0 6px}
+  .graph-legend{position:absolute; left:12px; bottom:28px; z-index:4; background:rgba(8,20,36,.8); border:1px solid rgba(146,235,208,.18); border-radius:12px; padding:8px 12px; font-size:11.5px; color:var(--ink-soft); display:flex; flex-direction:column; gap:5px; max-width:270px; pointer-events:none}
+  .graph-legend span{display:flex; align-items:center; gap:7px}
+  .graph-legend .lg-title{font-size:10px; letter-spacing:.08em; text-transform:uppercase; opacity:.7}
   select.sel{width:100%; padding:11px 12px; border-radius:10px; border:1px solid rgba(146,235,208,.25); background:rgba(255,255,255,.06); color:var(--ink); font-family:var(--body); font-size:14px}
   select.sel option{color:#000}
 </style>
@@ -143,7 +146,14 @@ var graphLayout="force";
 // nós críticos destacados no grafo (liga/desliga no palco)
 var showCritical=false;
 // simulação "e se…?" (só no palco, só na fase Exercício, só neste navegador): chaves de nós retirados da visão
-var simRemoved={};
+var simRemoved={};         // pessoas retiradas da rede simulada
+var simCut={};             // laços retirados (chave a|b)
+var simHypOff=false;       // true = rede simulada sem os laços hipotéticos
+var simHypSkip={};         // laços hipotéticos desligados um a um
+var viewMode="declarada";  // declarada | simulada | comparar (só o facilitador, só no Exercício)
+var posCache={};           // posições dos nós, para a visão não saltar ao alternar entre redes
+function resetSim(){ simRemoved={}; simCut={}; simHypOff=false; simHypSkip={}; }
+function simEdited(){ return simHypOff || Object.keys(simRemoved).length>0 || Object.keys(simCut).length>0 || Object.keys(simHypSkip).length>0; }
 var selectedKey=null;      // nó selecionado no grafo (sobrevive aos re-renders)
 var sideTabMemory="metrics";
 // rascunho do formulário do participante: sobrevive aos re-renders que chegam quando OUTRAS pessoas agem
@@ -475,19 +485,33 @@ function computeMetrics(g, includeHyp){
 
 function pairKey(a,b){ return a<b ? a+"|"+b : b+"|"+a; }
 
-// simulação "e se…?": devolve uma cópia do grafo sem as pessoas retiradas; os dados no banco não mudam
-function applySim(g){
-  var removed=Object.keys(simRemoved).filter(function(k){ return g.nodes[k]; });
-  if(!removed.length) return g;
-  var nodes={};
-  Object.keys(g.nodes).forEach(function(k){
-    if(simRemoved[k]) return;
-    var o={}; for(var f in g.nodes[k]) o[f]=g.nodes[k][f];
-    o.degree=0; nodes[k]=o;
+// Duas redes a partir da mesma base: a DECLARADA (só laços reais) e a SIMULADA (declarada + laços hipotéticos,
+// menos os laços e as pessoas retirados). Nada disso toca o banco. "union" serve ao desenho da comparação.
+function buildScenario(gFull){
+  function copyNode(k){ var o={}; for(var f in gFull.nodes[k]) o[f]=gFull.nodes[k][f]; o.degree=0; return o; }
+  var decl={nodes:{}, edges:[]}, sim={nodes:{}, edges:[]}, uni={nodes:{}, edges:[]};
+  var added=0, cutN=0;
+  Object.keys(gFull.nodes).forEach(function(k){
+    decl.nodes[k]=copyNode(k); uni.nodes[k]=copyNode(k);
+    if(!simRemoved[k]) sim.nodes[k]=copyNode(k); else uni.nodes[k].ghost=true;
   });
-  var edges=g.edges.filter(function(e){ return nodes[e.a] && nodes[e.b]; }).map(function(e){ return {a:e.a,b:e.b,real:e.real,hyp:e.hyp}; });
-  edges.forEach(function(e){ if(e.real){ nodes[e.a].degree++; nodes[e.b].degree++; } });
-  return {nodes:nodes, edges:edges, simulated:true, removedKeys:removed};
+  gFull.edges.forEach(function(e){
+    var key=pairKey(e.a,e.b), hypOnly=e.hyp && !e.real;
+    if(e.real){ decl.edges.push({a:e.a,b:e.b,real:true,hyp:false,st:"kept",key:key}); decl.nodes[e.a].degree++; decl.nodes[e.b].degree++; }
+    var alive=!simRemoved[e.a] && !simRemoved[e.b];
+    var hypOn=hypOnly && !simHypOff && !simHypSkip[key];
+    var inSim=(e.real || hypOn) && !simCut[key] && alive;
+    if(inSim){
+      var st=e.real? "kept" : "added";
+      sim.edges.push({a:e.a,b:e.b,real:true,hyp:false,st:st,key:key}); sim.nodes[e.a].degree++; sim.nodes[e.b].degree++;
+      uni.edges.push({a:e.a,b:e.b,real:true,hyp:false,st:st,key:key});
+      if(!e.real) added++;
+    } else if(e.real || (hypOnly && !simHypOff)){
+      uni.edges.push({a:e.a,b:e.b,real:true,hyp:false,st:"cut",key:key}); cutN++;
+    }
+  });
+  Object.keys(uni.nodes).forEach(function(k){ uni.nodes[k].degree = sim.nodes[k]? sim.nodes[k].degree : decl.nodes[k].degree; });
+  return {decl:decl, sim:sim, union:uni, added:added, cut:cutN};
 }
 
 // per-node detail shown in the stage side panel when a node in the graph is clicked
@@ -580,7 +604,7 @@ function openSession(code, done){
       return;
     }
     notFoundCode=null;
-    if(!currentSession || currentSession.code!==code){ simRemoved={}; selectedKey=null; }
+    if(!currentSession || currentSession.code!==code){ resetSim(); selectedKey=null; posCache={}; }
     currentSession={id:res.data.id, code:res.data.code, name:res.data.name, phase:res.data.phase||"coleta"};
     subscribeSession();
     if(done) done(currentSession);
@@ -925,14 +949,18 @@ function renderStage(code){
   }
 
   var gFull=buildGraph();
-  if(state.phase!=="exercicio") simRemoved={};          // a simulação só existe no Exercício
-  var g=applySim(gFull);
-  var metrics=computeMetrics(g);
-  var metricsFull = g.simulated ? computeMetrics(gFull) : null;   // "antes", só quando há simulação
-  if(selectedKey && !g.nodes[selectedKey]) selectedKey=null;
-  // só calculada quando há laços hipotéticos registrados — é a base do
-  // comparativo "com e sem hipotéticos" mostrado mais abaixo
-  var metricsHyp = metrics.hypCount>0 ? computeMetrics(g,true) : null;
+  var inEx = state.phase==="exercicio";
+  if(!inEx){ resetSim(); viewMode="declarada"; }
+  var canEdit = isAdmin && inEx;
+  var mode = !inEx? "declarada" : (canEdit? viewMode : "comparar");
+  var sc=buildScenario(gFull);
+  var hypTotal=gFull.edges.filter(function(e){ return e.hyp && !e.real; }).length;
+  var metricsDecl=computeMetrics(sc.decl);
+  var metricsSimu=inEx? computeMetrics(sc.sim) : null;
+  var g = mode==="declarada"? sc.decl : sc.sim;                      // rede analisada (métricas, críticos, detalhe do nó)
+  var gDraw = mode==="declarada"? sc.decl : (mode==="simulada"? sc.sim : sc.union);
+  var metrics = mode==="declarada"? metricsDecl : metricsSimu;
+  if(selectedKey && !gFull.nodes[selectedKey]) selectedKey=null;
 
   // ---- cabeçalho: título + QR/link de entrada ----
   var header=h("div",{style:"display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:16px;margin-bottom:6px"});
@@ -967,7 +995,7 @@ function renderStage(code){
         var previousPhase=currentSession.phase;
         // atualização otimista: destaca a fase na hora, sem esperar o tempo
         // real ir e voltar — se der erro, desfaz e avisa
-        if(ph!=="exercicio") simRemoved={};
+        if(ph!=="exercicio"){ resetSim(); viewMode="declarada"; }
         currentSession.phase=ph; state.phase=ph; render();
         sb.from("oficina_rede_sessions").update({phase:ph, updated_at:new Date().toISOString()}).eq("id",currentSession.id).then(function(res){
           if(res.error){
@@ -982,7 +1010,7 @@ function renderStage(code){
     admin.appendChild(h("div",{style:"height:10px"}));
     var row=h("div",{class:"row"});
     var exportBtn=h("button",{class:"btn secondary", onclick:function(){
-      var payload=JSON.stringify({oficina:currentSession, participants:state.participants, ties:state.ties, metrics:(metricsFull||metrics)}, null, 2);
+      var payload=JSON.stringify({oficina:currentSession, participants:state.participants, ties:state.ties, metricsDeclarada:metricsDecl, metricsSimulada:metricsSimu}, null, 2);
       var blob=new Blob([payload], {type:"application/json"});
       var a=document.createElement("a");
       a.href=URL.createObjectURL(blob);
@@ -1031,6 +1059,19 @@ function renderStage(code){
     layoutSeg.appendChild(b);
   });
   layoutBar.appendChild(layoutSeg);
+  if(canEdit){
+    var viewGroup=h("div",{style:"display:flex;align-items:center;gap:10px;margin-right:18px"},[
+      h("span",{class:"muted", style:"font-size:12px;letter-spacing:.06em;text-transform:uppercase"},["Rede:"])
+    ]);
+    var viewSeg=h("div",{class:"seg", style:"width:auto"});
+    [["declarada","Declarada"],["simulada","Simulada"],["comparar","Comparar"]].forEach(function(p){
+      viewSeg.appendChild(h("button",{class: viewMode===p[0]?"active":"", style:"flex:none;padding:8px 16px", onclick:function(){
+        if(viewMode===p[0]) return; viewMode=p[0]; render();
+      }},[p[1]]));
+    });
+    viewGroup.appendChild(viewSeg);
+    layoutBar.insertBefore(viewGroup, layoutBar.firstChild);
+  }
   var critToggle=h("button",{class:"btn "+(showCritical?"":"secondary"), style:"width:auto;padding:8px 14px;font-size:13px;margin-left:8px", onclick:function(){
     showCritical=!showCritical; render();
   }},[(showCritical?"✓ ":"")+"Destacar nós críticos"]);
@@ -1040,14 +1081,19 @@ function renderStage(code){
   // ---- grafo + painel lateral (métricas, legenda, detalhe do nó) ----
   var grid=h("div",{class:"stage-grid"});
   var graphBox=h("div",{class:"graph-box"});
-  if(g.simulated) graphBox.appendChild(h("div",{class:"sim-banner"},["SIMULAÇÃO · "+g.removedKeys.length+(g.removedKeys.length===1?" pessoa retirada":" pessoas retiradas")+" (nada foi apagado)"]));
+  if(mode!=="declarada"){
+    var pessoasR=Object.keys(simRemoved).length;
+    var bt = mode==="comparar"? "COMPARAÇÃO · declarada × simulada" : "REDE SIMULADA";
+    bt += " · +"+sc.added+" hipotéticos · −"+sc.cut+" laços retirados · −"+pessoasR+(pessoasR===1?" pessoa":" pessoas")+" (nada foi apagado)";
+    graphBox.appendChild(h("div",{class:"sim-banner"},[bt]));
+  }
   grid.appendChild(graphBox);
 
   var side=h("div",{class:"side-sticky"});
   var sideTabs=h("div",{class:"seg side-tabs", style:"margin-bottom:12px"});
   var sidePanels=h("div",{class:"side-panels"});
   var overviewCard=h("div",{class:"card"});
-  overviewCard.appendChild(h("h3",{style:"font-size:15px;margin-bottom:10px"},["Métricas da rede"]));
+  overviewCard.appendChild(h("h3",{style:"font-size:15px;margin-bottom:10px"},[mode==="declarada"? "Métricas da rede declarada" : "Métricas da rede simulada"]));
   var metricsGrid=h("div",{class:"metrics"});
   function metricEl(k,v,wide,hint){
     var kids=[h("div",{class:"k"},[k]), h("div",{class:"v"},[v])];
@@ -1055,7 +1101,7 @@ function renderStage(code){
     return h("div",{class:"metric"+(wide?" wide":"")},kids);
   }
   metricsGrid.appendChild(metricEl("Nós", String(metrics.n)));
-  metricsGrid.appendChild(metricEl("Laços reais", String(metrics.m)));
+  metricsGrid.appendChild(metricEl("Laços", String(metrics.m)));
   metricsGrid.appendChild(metricEl("Grupos", String(metrics.blocks)));
   metricsGrid.appendChild(metricEl("Densidade", metrics.density.toFixed(2)));
   metricsGrid.appendChild(metricEl("Distância média", metrics.avgDist? metrics.avgDist.toFixed(2):"—"));
@@ -1063,51 +1109,9 @@ function renderStage(code){
     "laços que, se caíssem, partiriam a rede em mais pedaços"));
   metricsGrid.appendChild(metricEl("Dependência", metrics.centralization.toFixed(2), true,
     "quanto a estrutura da rede depende de poucas pessoas centrais, em vez de estar distribuída"));
-  metricsGrid.appendChild(metricEl("Laços hipotéticos", String(metrics.hypCount), true));
+  metricsGrid.appendChild(metricEl("Laços hipotéticos registrados", String(hypTotal), true, inEx? "formam a rede simulada" : "aparecem na fase Exercício"));
   overviewCard.appendChild(metricsGrid);
-  overviewCard.appendChild(h("div",{style:"height:12px"}));
-  overviewCard.appendChild(h("div",{class:"legend"},[
-    h("span",{},[h("span",{class:"dot",style:"background:var(--mint)"}), "na sala (confirmou pelo celular)"]),
-    h("span",{},[h("span",{class:"dot declared"}), "na sala (indicado por outra pessoa)"]),
-    h("span",{},[h("span",{class:"dot outline"}), "pessoa de fora"]),
-    h("span",{},[h("span",{class:"lineSwatch",style:"border-color:var(--mint2)"}), "laço real"]),
-    h("span",{},[h("span",{class:"lineSwatch",style:"border-color:var(--amber);border-top-style:dashed"}), "laço hipotético"])
-  ].concat(showCritical? Object.keys(CRIT).map(function(k){
-    return h("span",{},[h("span",{class:"dot",style:"background:"+CRIT[k].color}), CRIT[k].icon+" "+CRIT[k].text]);
-  }) : [])));
   sidePanels.appendChild(overviewCard);
-
-  // comparativo "sem laços hipotéticos" vs "com laços hipotéticos" — duas
-  // áreas lado a lado, só aparece quando existe pelo menos um laço hipotético
-  if(metricsHyp){
-    var compareCard=h("div",{class:"card"});
-    compareCard.appendChild(h("h3",{style:"font-size:15px;margin-bottom:4px"},["Impacto dos laços hipotéticos"]));
-    compareCard.appendChild(h("p",{class:"muted", style:"font-size:12px;margin-bottom:10px"},
-      ["Compara a rede só com laços reais com a rede somando os laços hipotéticos — mostra o que mudaria se essas conexões imaginadas existissem de fato."]));
-    var cmpTable=h("div",{class:"cmp-table"});
-    cmpTable.appendChild(h("div",{class:"cmp-row cmp-head"},[
-      h("span",{},[""]), h("span",{},["Sem hipotéticos"]), h("span",{},["Com hipotéticos"])
-    ]));
-    var cmpRows=[
-      ["Laços", String(metrics.m), String(metricsHyp.m)],
-      ["Maior grupo", String(metrics.giantSize), String(metricsHyp.giantSize)],
-      ["Grupos", String(metrics.blocks), String(metricsHyp.blocks)],
-      ["Densidade", metrics.density.toFixed(2), metricsHyp.density.toFixed(2)],
-      ["Distância média", metrics.avgDist? metrics.avgDist.toFixed(2):"—", metricsHyp.avgDist? metricsHyp.avgDist.toFixed(2):"—"],
-      ["Laços críticos", String(metrics.bridges), String(metricsHyp.bridges)],
-      ["Dependência", metrics.centralization.toFixed(2), metricsHyp.centralization.toFixed(2)]
-    ];
-    cmpRows.forEach(function(r){
-      var changed = r[1]!==r[2];
-      cmpTable.appendChild(h("div",{class:"cmp-row"+(changed?" cmp-changed":"")},[
-        h("span",{class:"muted"},[r[0]]),
-        h("span",{},[r[1]]),
-        h("span",{},[r[2]])
-      ]));
-    });
-    compareCard.appendChild(cmpTable);
-    sidePanels.appendChild(compareCard);
-  }
 
   var nodeInfoBox=h("div",{class:"card"});
   function renderNodeInfo(key){
@@ -1115,6 +1119,11 @@ function renderStage(code){
     nodeInfoBox.appendChild(h("h3",{style:"font-size:15px;margin-bottom:8px"},["Detalhe do nó"]));
     if(!key){
       nodeInfoBox.appendChild(h("div",{class:"muted"},["Clique em uma pessoa no grafo para ver os detalhes dela."]));
+      return;
+    }
+    if(simRemoved[key] && gFull.nodes[key]){
+      nodeInfoBox.appendChild(h("div",{class:"muted"},[gFull.nodes[key].label+" está retirada da rede simulada."]));
+      if(canEdit) nodeInfoBox.appendChild(h("button",{class:"btn secondary",style:"margin-top:10px",onclick:function(){ delete simRemoved[key]; simTouch(); }},["Restaurar na simulação"]));
       return;
     }
     var d=nodeDetails(key, g, metrics);
@@ -1125,10 +1134,9 @@ function renderStage(code){
     var rows=[
       ["Nome", d.label],
       ["Status", d.selfJoined? "Na sala (confirmou pelo próprio celular)" : (d.inRoom? "Na sala (indicado por outra pessoa)" : "Pessoa de fora")],
-      ["Grau (laços reais)", String(d.degree)],
+      ["Laços", String(d.degree)],
       ["Grupo", d.compSize? (d.isGiant? "Maior grupo ("+d.compSize+" pessoas)" : "Grupo de "+d.compSize+(d.compSize>1?" pessoas":" pessoa")) : "—"],
       ["Laços críticos aqui", String(d.bridgeDeg)],
-      ["Laços hipotéticos", String(d.hypDeg)],
       ["Laços externos declarados", String(d.externalCount)]
     ];
     rows.forEach(function(r){
@@ -1145,10 +1153,10 @@ function renderStage(code){
       var lc=metrics.crit.list.filter(function(x){ return x.key===key; })[0];
       if(lc) lc.why.forEach(function(w){ nodeInfoBox.appendChild(h("div",{class:"muted",style:"font-size:12px;margin-top:6px"},[w])); });
     }
-    if(isAdmin && state.phase==="exercicio"){
+    if(canEdit){
       nodeInfoBox.appendChild(h("div",{style:"height:10px"}));
       nodeInfoBox.appendChild(h("button",{class:"btn amber",onclick:function(){
-        simRemoved[key]=true; selectedKey=null; sideTabMemory="sim"; render();
+        simRemoved[key]=true; selectedKey=null; simTouch();
       }},["Remover da simulação (só nesta tela)"]));
     }
     if(isAdmin){
@@ -1183,7 +1191,7 @@ function renderStage(code){
       nodeInfoBox.appendChild(mergeBtn);
     }
   }
-  renderNodeInfo(selectedKey && g.nodes[selectedKey]? selectedKey : null);
+  renderNodeInfo(selectedKey && (g.nodes[selectedKey]||simRemoved[selectedKey])? selectedKey : null);
   sidePanels.appendChild(nodeInfoBox);
 
 
@@ -1207,77 +1215,104 @@ function renderStage(code){
   });
   sidePanels.appendChild(critCard);
 
-  // ---- aba "Simular": retirar pessoas só da visão, apenas no Exercício e só para o facilitador ----
+  // ---- aba "Simulada": declarada × simulada; o facilitador monta a simulação, os demais só leem ----
+  function simTouch(){ sideTabMemory="sim"; if(viewMode==="declarada") viewMode="comparar"; render(); }
   var simCard=null;
-  if(isAdmin && state.phase==="exercicio"){
+  if(inEx){
     simCard=h("div",{class:"card"});
-    simCard.appendChild(h("h3",{style:"font-size:15px;margin-bottom:4px"},["Simulação “e se…?”"]));
-    simCard.appendChild(h("p",{class:"muted",style:"font-size:12px;margin-bottom:10px"},["Retire pessoas só desta tela e veja o que muda na rede. Nada é apagado do banco e os celulares não mudam. Vale só neste navegador e some ao sair do Exercício ou ao recarregar a página."]));
-    var pick=h("select",{class:"sel", id:"simPick"});
-    pick.appendChild(h("option",{value:""},["Escolha a pessoa a retirar…"]));
-    Object.keys(g.nodes).sort(function(a,b){ return g.nodes[a].label.localeCompare(g.nodes[b].label); }).forEach(function(k){
-      pick.appendChild(h("option",{value:k},[g.nodes[k].label]));
+    simCard.appendChild(h("h3",{style:"font-size:15px;margin-bottom:4px"},["Rede simulada"]));
+    simCard.appendChild(h("p",{class:"muted",style:"font-size:12px;margin-bottom:10px"},[canEdit
+      ? "Parte da rede declarada, soma os laços hipotéticos dos participantes e permite retirar laços e pessoas. Nada é apagado do banco; vale só neste navegador e some ao sair do Exercício ou recarregar."
+      : "A rede declarada somada aos laços hipotéticos dos participantes."]));
+
+    // tabela declarada × simulada
+    var t4=h("div",{class:"cmp-table",style:"margin-bottom:12px"});
+    t4.appendChild(h("div",{class:"cmp-row4 cmp-head"},[h("span",{},[""]),h("span",{},["Declarada"]),h("span",{},["Simulada"]),h("span",{},["Variação"])]));
+    var rows4=[
+      ["Pessoas", metricsDecl.n, metricsSimu.n, 0, false],
+      ["Laços", metricsDecl.m, metricsSimu.m, 0, false],
+      ["Grupos", metricsDecl.blocks, metricsSimu.blocks, 0, true],
+      ["Maior grupo", metricsDecl.giantSize, metricsSimu.giantSize, 0, false],
+      ["Densidade", metricsDecl.density, metricsSimu.density, 2, false],
+      ["Distância média", metricsDecl.avgDist, metricsSimu.avgDist, 2, true],
+      ["Laços críticos", metricsDecl.bridges, metricsSimu.bridges, 0, true],
+      ["Dependência", metricsDecl.centralization, metricsSimu.centralization, 2, true]
+    ];
+    rows4.forEach(function(r){
+      var a=r[1]||0, b=r[2]||0, d=b-a, dec=r[3], same=Math.abs(d)<1e-9;
+      var fmt=function(x){ return dec? x.toFixed(dec) : String(x); };
+      var cls = same? "" : ((d>0)===r[4]? "worse" : "better");
+      t4.appendChild(h("div",{class:"cmp-row4"},[h("span",{class:"muted"},[r[0]]), h("span",{},[fmt(a)]), h("span",{},[fmt(b)]),
+        h("span",{class:cls},[same? "—" : (d>0?"+":"")+fmt(d)])]));
     });
-    simCard.appendChild(pick);
-    simCard.appendChild(h("div",{style:"height:8px"}));
-    function simAdd(keys){ keys.forEach(function(k){ simRemoved[k]=true; }); sideTabMemory="sim"; render(); }
-    simCard.appendChild(h("button",{class:"btn amber",onclick:function(){ if(pick.value) simAdd([pick.value]); else toast("Escolha uma pessoa"); }},["Remover da simulação"]));
-    simCard.appendChild(h("div",{style:"height:8px"}));
-    var simRow=h("div",{class:"row"});
-    simRow.appendChild(h("button",{class:"btn secondary",style:"font-size:13px;padding:11px 8px",onclick:function(){
-      simAdd(metrics.crit.list.slice(0,3).map(function(c){ return c.key; }));
-    }},["Retirar as 3 mais críticas"]));
-    simRow.appendChild(h("button",{class:"btn secondary",style:"font-size:13px;padding:11px 8px",onclick:function(){
-      var ks=Object.keys(g.nodes);
-      for(var i=ks.length-1;i>0;i--){ var j=Math.floor(Math.random()*(i+1)); var t=ks[i]; ks[i]=ks[j]; ks[j]=t; }
-      simAdd(ks.slice(0,3));
-    }},["Retirar 3 ao acaso"]));
-    simCard.appendChild(simRow);
-    simCard.appendChild(h("div",{style:"height:8px"}));
-    simCard.appendChild(h("button",{class:"btn ghost",onclick:function(){ simRemoved={}; sideTabMemory="sim"; render(); }},["Restaurar tudo"]));
-    var chips=h("div",{style:"margin-top:10px"});
-    (g.removedKeys||[]).forEach(function(k){
-      var chip=h("span",{class:"chip"},[gFull.nodes[k]? gFull.nodes[k].label : k]);
-      chip.appendChild(h("button",{title:"Restaurar","aria-label":"Restaurar",onclick:function(){ delete simRemoved[k]; sideTabMemory="sim"; render(); }},["↺"]));
-      chips.appendChild(chip);
-    });
-    simCard.appendChild(chips);
-    if(metricsFull){
-      var t4=h("div",{class:"cmp-table",style:"margin-top:10px"});
-      t4.appendChild(h("div",{class:"cmp-row4 cmp-head"},[h("span",{},[""]),h("span",{},["Antes"]),h("span",{},["Agora"]),h("span",{},["Variação"])]));
-      function f2(x){ return x.toFixed(2); }
-      var rows4=[
-        ["Pessoas", metricsFull.n, metrics.n, 0, false],
-        ["Laços reais", metricsFull.m, metrics.m, 0, false],
-        ["Grupos", metricsFull.blocks, metrics.blocks, 0, true],
-        ["Maior grupo", metricsFull.giantSize, metrics.giantSize, 0, false],
-        ["Densidade", metricsFull.density, metrics.density, 2, false],
-        ["Distância média", metricsFull.avgDist, metrics.avgDist, 2, true],
-        ["Laços críticos", metricsFull.bridges, metrics.bridges, 0, true],
-        ["Dependência", metricsFull.centralization, metrics.centralization, 2, true]
-      ];
-      rows4.forEach(function(r){
-        var a=r[1], b=r[2], d=b-a, dec=r[3], same=Math.abs(d)<1e-9;
-        var fmt=function(x){ return dec? x.toFixed(dec) : String(x); };
-        var cls = same? "" : ((d>0)===r[4]? "worse" : "better");
-        t4.appendChild(h("div",{class:"cmp-row4"},[h("span",{class:"muted"},[r[0]]), h("span",{},[fmt(a)]), h("span",{},[fmt(b)]),
-          h("span",{class:cls},[same? "—" : (d>0?"+":"")+fmt(d)])]));
+    simCard.appendChild(t4);
+    simCard.appendChild(h("p",{class:"muted",style:"font-size:11px;margin-bottom:12px"},["Vermelho: mais fragmentada ou dependente. Verde: o contrário."]));
+
+    if(canEdit){
+      // 1) laços hipotéticos
+      simCard.appendChild(h("button",{class:"btn "+(simHypOff?"secondary":""),style:"font-size:13px;padding:10px",onclick:function(){ simHypOff=!simHypOff; simTouch(); }},[
+        (simHypOff? "Incluir" : "✓ Incluindo")+" os laços hipotéticos dos participantes ("+hypTotal+")"]));
+      simCard.appendChild(h("div",{style:"height:12px"}));
+
+      // 2) retirar um laço (também dá para clicar no laço no grafo)
+      var edgeSel=h("select",{class:"sel", id:"simEdgePick"});
+      edgeSel.appendChild(h("option",{value:""},["Retirar um laço… (ou clique nele no grafo)"]));
+      sc.sim.edges.slice().sort(function(a,b){ return (gFull.nodes[a.a].label+gFull.nodes[a.b].label).localeCompare(gFull.nodes[b.a].label+gFull.nodes[b.b].label); }).forEach(function(e){
+        edgeSel.appendChild(h("option",{value:e.key},[gFull.nodes[e.a].label+" — "+gFull.nodes[e.b].label+(e.st==="added"?" (hipotético)":"")]));
       });
-      simCard.appendChild(t4);
-      simCard.appendChild(h("p",{class:"muted",style:"font-size:11px;margin-top:8px"},["Vermelho: a rede ficou mais fragmentada ou dependente. Verde: o contrário."]));
-    } else {
-      simCard.appendChild(h("p",{class:"muted",style:"font-size:12px;margin-top:10px"},["Nenhuma pessoa retirada ainda. Use a lista acima, ou clique em um nó no grafo, vá na aba Nó e use “Remover da simulação”."]));
+      simCard.appendChild(edgeSel);
+      simCard.appendChild(h("div",{style:"height:8px"}));
+      simCard.appendChild(h("button",{class:"btn amber",style:"font-size:13px;padding:10px",onclick:function(){
+        if(!edgeSel.value){ toast("Escolha um laço"); return; } simCut[edgeSel.value]=true; simTouch();
+      }},["Retirar laço"]));
+      simCard.appendChild(h("div",{style:"height:12px"}));
+
+      // 3) retirar pessoas
+      var pick=h("select",{class:"sel", id:"simPick"});
+      pick.appendChild(h("option",{value:""},["Retirar uma pessoa…"]));
+      Object.keys(sc.sim.nodes).sort(function(a,b){ return gFull.nodes[a].label.localeCompare(gFull.nodes[b].label); }).forEach(function(k){
+        pick.appendChild(h("option",{value:k},[gFull.nodes[k].label]));
+      });
+      simCard.appendChild(pick);
+      simCard.appendChild(h("div",{style:"height:8px"}));
+      function simAdd(keys){ keys.forEach(function(k){ simRemoved[k]=true; }); simTouch(); }
+      simCard.appendChild(h("button",{class:"btn amber",style:"font-size:13px;padding:10px",onclick:function(){ if(pick.value) simAdd([pick.value]); else toast("Escolha uma pessoa"); }},["Retirar pessoa"]));
+      simCard.appendChild(h("div",{style:"height:8px"}));
+      var simRow=h("div",{class:"row"});
+      simRow.appendChild(h("button",{class:"btn secondary",style:"font-size:12.5px;padding:10px 6px",onclick:function(){
+        simAdd(metricsSimu.crit.list.slice(0,3).map(function(c){ return c.key; }));
+      }},["Retirar as 3 mais críticas"]));
+      simRow.appendChild(h("button",{class:"btn secondary",style:"font-size:12.5px;padding:10px 6px",onclick:function(){
+        var ks=Object.keys(sc.sim.nodes);
+        for(var i=ks.length-1;i>0;i--){ var j=Math.floor(Math.random()*(i+1)); var t=ks[i]; ks[i]=ks[j]; ks[j]=t; }
+        simAdd(ks.slice(0,3));
+      }},["Retirar 3 ao acaso"]));
+      simCard.appendChild(simRow);
+
+      // 4) o que está retirado, com desfazer
+      var chips=h("div",{style:"margin-top:12px"});
+      function addChip(text, undo){
+        var chip=h("span",{class:"chip"},[text]);
+        chip.appendChild(h("button",{title:"Desfazer","aria-label":"Desfazer",onclick:function(){ undo(); simTouch(); }},["↺"]));
+        chips.appendChild(chip);
+      }
+      Object.keys(simRemoved).forEach(function(k){ addChip("pessoa: "+(gFull.nodes[k]? gFull.nodes[k].label : k), function(){ delete simRemoved[k]; }); });
+      Object.keys(simCut).forEach(function(k){
+        var pr=k.split("|"); if(!gFull.nodes[pr[0]]||!gFull.nodes[pr[1]]) return;
+        addChip("laço: "+gFull.nodes[pr[0]].label+" — "+gFull.nodes[pr[1]].label, function(){ delete simCut[k]; });
+      });
+      simCard.appendChild(chips);
+      simCard.appendChild(h("div",{style:"height:8px"}));
+      simCard.appendChild(h("button",{class:"btn ghost",onclick:function(){ resetSim(); simTouch(); }},["Restaurar tudo"]));
     }
-    sidePanels.appendChild(simCard);
-  }
+  }  if(simCard) sidePanels.appendChild(simCard);
 
   // ---- abas do painel lateral: cada card fica inteiro visível junto do grafo,
   // sem precisar descer a página — só uma aba por vez, com rolagem própria ----
   var sideTabDefs=[["metrics","Métricas",overviewCard]];
-  if(metricsHyp) sideTabDefs.push(["compare","Comparar",compareCard]);
   sideTabDefs.push(["node","Nó",nodeInfoBox]);
   sideTabDefs.push(["crit","Críticos",critCard]);
-  if(simCard) sideTabDefs.push(["sim","Simular",simCard]);
+  if(simCard) sideTabDefs.push(["sim","Simulada",simCard]);
   var activeSideTab=sideTabDefs.some(function(t){ return t[0]===sideTabMemory; })? sideTabMemory : "metrics";
   function showSideTab(name){
     activeSideTab=name; sideTabMemory=name;
@@ -1310,10 +1345,30 @@ function renderStage(code){
     qrHolder.style.color="#0B2A45"; qrHolder.style.fontSize="11px"; qrHolder.textContent="QR indisponível — use o link";
   }
 
-  drawGraph(graphBox, g, function(key){
+  drawGraph(graphBox, gDraw, function(key){
     renderNodeInfo(key);
     showSideTab("node");
-  }, graphLayout, {crit:metrics.crit.map, show:showCritical});
+  }, graphLayout, {crit:metrics.crit.map, show:showCritical, canEdit:canEdit&&mode!=="declarada", onEdge:function(key){
+    if(simCut[key]) delete simCut[key]; else simCut[key]=true;
+    simTouch();
+  }});
+
+  // legenda dentro do grafo
+  var lg=h("div",{class:"graph-legend"});
+  function lgi(sw,txt){ lg.appendChild(h("span",{},[sw,txt])); }
+  lgi(h("span",{class:"dot",style:"background:var(--mint)"}),"na sala (confirmou pelo celular)");
+  lgi(h("span",{class:"dot declared"}),"na sala (indicado por outra pessoa)");
+  lgi(h("span",{class:"dot outline"}),"pessoa de fora");
+  lgi(h("span",{class:"lineSwatch",style:"border-color:var(--mint2)"}), mode==="declarada"? "laço declarado" : (mode==="comparar"? "laço mantido" : "laço declarado"));
+  if(mode!=="declarada") lgi(h("span",{class:"lineSwatch",style:"border-color:var(--amber);border-top-style:dashed"}),"laço hipotético (simulado)");
+  if(mode==="comparar"){
+    lgi(h("span",{class:"lineSwatch",style:"border-color:#FF6B6B;border-top-style:dashed"}),"laço retirado");
+    lgi(h("span",{class:"dot outline",style:"opacity:.5"}),"pessoa retirada");
+  }
+  if(showCritical) Object.keys(CRIT).forEach(function(k){
+    lgi(h("span",{class:"dot",style:"background:"+CRIT[k].color}), CRIT[k].icon+" "+CRIT[k].text);
+  });
+  graphBox.appendChild(lg);
 }
 
 // posiciona os nós para os layouts clássicos não-orgânicos: fixa x/y/fx/fy de
@@ -1455,7 +1510,7 @@ function drawGraph(container, g, onNodeClick, layout, opts){
   var merge=glow.append("feMerge"); merge.append("feMergeNode").attr("in","b"); merge.append("feMergeNode").attr("in","SourceGraphic");
 
   var nodeArr=Object.keys(g.nodes).map(function(k){ return g.nodes[k]; });
-  var linkArr=g.edges.map(function(e){ return {source:e.a, target:e.b, real:e.real, hyp:e.hyp}; });
+  var linkArr=g.edges.map(function(e){ return {source:e.a, target:e.b, a:e.a, b:e.b, key:e.key, real:e.real, hyp:e.hyp, st:e.st||"kept"}; });
 
   if(nodeArr.length===0){
     svg.append("text").attr("x",w/2).attr("y",hgt/2).attr("text-anchor","middle")
@@ -1465,6 +1520,8 @@ function drawGraph(container, g, onNodeClick, layout, opts){
   }
 
   layoutPositions(nodeArr, linkArr, layout||"force", w, hgt);
+  var warm=false;
+  if((layout||"force")==="force") nodeArr.forEach(function(d){ var p=posCache[d.key]; if(p){ d.x=p.x; d.y=p.y; warm=true; } });
 
   // everything pannable/zoomable lives inside "viewport"; defs/filters stay outside it
   var viewport=svg.append("g").attr("class","viewport");
@@ -1486,12 +1543,22 @@ function drawGraph(container, g, onNodeClick, layout, opts){
     .force("collide", d3.forceCollide(function(d){ return rOf(d)+14; }).iterations(2))
     .alphaDecay(0.015)
     .velocityDecay(0.35);
+  if(warm) sim.alpha(0.15);
 
   var link=viewport.append("g").selectAll("line").data(linkArr).enter().append("line")
-    .attr("stroke", function(d){ return d.hyp? "#FFC24D" : "#5FE0C6"; })
-    .attr("stroke-width", function(d){ return d.real? 2 : 1.6; })
-    .attr("stroke-dasharray", function(d){ return d.hyp? "6 5" : null; })
-    .attr("opacity", function(d){ return d.real? .85 : .7; });
+    .attr("stroke", function(d){ return d.st==="cut"? "#FF6B6B" : (d.st==="added"? "#FFC24D" : "#5FE0C6"); })
+    .attr("stroke-width", function(d){ return d.st==="added"? 1.8 : 2; })
+    .attr("stroke-dasharray", function(d){ return d.st==="cut"? "5 5" : (d.st==="added"? "6 5" : null); })
+    .attr("opacity", function(d){ return d.st==="cut"? .65 : .85; })
+    .style("pointer-events","none");
+  // área de clique mais larga para retirar/restaurar um laço direto no grafo (só o facilitador, na simulação)
+  var hitSel=null;
+  if(opts&&opts.canEdit){
+    hitSel=viewport.append("g").selectAll("line").data(linkArr).enter().append("line")
+      .attr("stroke","transparent").attr("stroke-width",14).style("cursor","pointer")
+      .on("click", function(event,d){ event.stopPropagation(); if(opts.onEdge) opts.onEdge(d.key); });
+    hitSel.append("title").text(function(d){ return d.st==="cut"? "Clique para restaurar este laço" : "Clique para retirar este laço"; });
+  }
 
   var node=viewport.append("g").selectAll("g").data(nodeArr).enter().append("g")
     .style("cursor","pointer");
@@ -1517,9 +1584,10 @@ function drawGraph(container, g, onNodeClick, layout, opts){
     if(selectedKey===d.key) return {c:"#FFC24D", w:3, dash:null};
     var cp=showCrit? critOf(d) : "";
     if(cp) return {c:CRIT[cp].color, w:4.5, dash:null};
+    if(d.ghost) return {c:"#FF6B6B", w:1.6, dash:"3 3"};
     return presenceOf(d)==="out"? {c:"#B9CBDD", w:1.6, dash:"4 3"} : {c:"none", w:0, dash:null};
   }
-  function dimmed(d){ return showCrit && !critOf(d); }
+  function dimmed(d){ return d.ghost || (showCrit && !critOf(d)); }
 
   node.append("circle")
     .attr("r", rOf)
@@ -1528,11 +1596,11 @@ function drawGraph(container, g, onNodeClick, layout, opts){
     .attr("stroke", function(d){ return ringOf(d).c; })
     .attr("stroke-width", function(d){ return ringOf(d).w; })
     .attr("stroke-dasharray", function(d){ return ringOf(d).dash; })
-    .attr("opacity", function(d){ return dimmed(d)? .35 : 1; });
+    .attr("opacity", function(d){ return d.ghost? .25 : (dimmed(d)? .35 : 1); });
 
   node.append("text")
-    .text(function(d){ var cp=showCrit? critOf(d) : ""; return (cp? CRIT[cp].icon+" " : "") + d.label + (presenceOf(d)==="out"? " (fora)" : ""); })
-    .attr("opacity", function(d){ return dimmed(d)? .45 : 1; })
+    .text(function(d){ var cp=showCrit? critOf(d) : ""; return (cp? CRIT[cp].icon+" " : "") + d.label + (d.ghost? " (retirada)" : (presenceOf(d)==="out"? " (fora)" : "")); })
+    .attr("opacity", function(d){ return d.ghost? .45 : (dimmed(d)? .45 : 1); })
     .attr("text-anchor","middle")
     .attr("dy", function(d){ return -(14+Math.min(14,d.degree*2.5)); })
     .attr("fill", function(d){ return presenceOf(d)==="confirmed"? "#fff" : "#B9CBDD"; })
@@ -1590,7 +1658,10 @@ function drawGraph(container, g, onNodeClick, layout, opts){
       if(d.fx==null) d.x=Math.max(r, Math.min(w-r, d.x));
       if(d.fy==null) d.y=Math.max(r, Math.min(hgt-r, d.y));
     });
+    nodeArr.forEach(function(d){ posCache[d.key]={x:d.x,y:d.y}; });
     link.attr("x1",function(d){return d.source.x;}).attr("y1",function(d){return d.source.y;})
+        .attr("x2",function(d){return d.target.x;}).attr("y2",function(d){return d.target.y;});
+    if(hitSel) hitSel.attr("x1",function(d){return d.source.x;}).attr("y1",function(d){return d.source.y;})
         .attr("x2",function(d){return d.target.x;}).attr("y2",function(d){return d.target.y;});
     node.attr("transform", function(d){ return "translate("+d.x+","+d.y+")"; });
   });
