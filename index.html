@@ -98,6 +98,18 @@
     border-radius:30px; font-size:14px; box-shadow:0 10px 30px rgba(0,0,0,.4); z-index:50; border:1px solid rgba(146,235,208,.3)}
   .top-nav{display:flex; justify-content:space-between; align-items:center; padding:0 0 2px}
   .small-link{font-size:12px; color:var(--ink-soft); text-decoration:none}
+  .sim-banner{position:absolute; left:12px; top:12px; z-index:5; background:rgba(255,194,77,.16); color:var(--amber); border:1.5px solid var(--amber); border-radius:12px; padding:6px 12px; font-weight:700; font-size:13px; pointer-events:none}
+  .cmp-row4{display:grid; grid-template-columns:1.2fr .8fr .8fr .9fr; gap:6px; align-items:center; padding:7px 0; border-bottom:1px solid rgba(146,235,208,.08); font-size:13px}
+  .cmp-row4 span:nth-child(n+2){text-align:center; font-weight:600}
+  .cmp-row4.cmp-head{font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-soft)}
+  .cmp-row4 .worse{color:#ff9b9b} .cmp-row4 .better{color:var(--mint2)}
+  .crit-item{border:1px solid rgba(146,235,208,.14); border-left:6px solid var(--c,#999); border-radius:10px; padding:9px 11px; cursor:pointer; margin-bottom:8px}
+  .crit-item:hover{background:rgba(255,255,255,.05)}
+  .crit-item .why{font-size:12px; color:var(--ink-soft); margin-top:3px; line-height:1.35}
+  .chip{display:inline-flex; align-items:center; gap:4px; background:rgba(255,194,77,.15); color:var(--amber); border-radius:999px; padding:3px 4px 3px 10px; margin:3px 4px 3px 0; font-size:12px}
+  .chip button{background:transparent; border:none; color:var(--amber); cursor:pointer; font-size:14px; padding:0 6px}
+  select.sel{width:100%; padding:11px 12px; border-radius:10px; border:1px solid rgba(146,235,208,.25); background:rgba(255,255,255,.06); color:var(--ink); font-family:var(--body); font-size:14px}
+  select.sel option{color:#000}
 </style>
 </head>
 <body>
@@ -128,6 +140,16 @@ var sessionChannel=null;
 // layout de organização topológica do grafo, escolhido no palco — persiste
 // entre re-renders (dados chegando ao vivo) até alguém trocar de novo
 var graphLayout="force";
+// nós críticos destacados no grafo (liga/desliga no palco)
+var showCritical=false;
+// simulação "e se…?" (só no palco, só na fase Exercício, só neste navegador): chaves de nós retirados da visão
+var simRemoved={};
+var selectedKey=null;      // nó selecionado no grafo (sobrevive aos re-renders)
+var sideTabMemory="metrics";
+// rascunho do formulário do participante: sobrevive aos re-renders que chegam quando OUTRAS pessoas agem
+var draft={name:"", to:"", ext:false};
+var loading=false, loadAgain=false, loadTimer=null;
+var renderedKey="", lastEntrarSig="";
 
 function parseHash(){
   var hRaw=(location.hash||"").replace("#","");
@@ -269,6 +291,92 @@ function buildGraph(){
   return {nodes:nodes, edges:edges};
 }
 
+
+// ---------- nós críticos ----------
+// ruptura: a saída da pessoa separa blocos de 2+ pessoas; elo único: só deixa pessoas sem nenhuma ligação;
+// ponte: entre as maiores intermediações; referência: entre as mais ligadas (cerca de 10% da rede cada)
+var CRIT={
+  "ruptura":{color:"#FF6B6B", icon:"◆", text:"ruptura: se sair, a rede se parte"},
+  "elo único":{color:"#B07CFF", icon:"◇", text:"elo único: única ligação de outras pessoas"},
+  "ponte":{color:"#5FE0C6", icon:"⇄", text:"ponte entre grupos"},
+  "referência":{color:"#FFC24D", icon:"★", text:"referência: muito ligada"}
+};
+function analyzeCritical(keys, adj, degreeHere){
+  var n=keys.length, map={}, i;
+  keys.forEach(function(k){ map[k]={type:"", lost:0, pieces:0, isolated:0, betw:0, roles:[], primary:""}; });
+  if(n<3) return {map:map, list:[]};
+  // ruptura / elo único: simula a saída de cada pessoa com 2+ ligações
+  for(var v=0; v<n; v++){
+    if(adj[v].length<2) continue;
+    var seen=new Array(n).fill(false); seen[v]=true; var sizes=[];
+    adj[v].forEach(function(e0){
+      if(seen[e0.to]) return;
+      var size=0, stack=[e0.to]; seen[e0.to]=true;
+      while(stack.length){
+        var u=stack.pop(); size++;
+        adj[u].forEach(function(e){ if(!seen[e.to]){ seen[e.to]=true; stack.push(e.to); } });
+      }
+      sizes.push(size);
+    });
+    if(sizes.length<2) continue;
+    sizes.sort(function(a,b){ return b-a; });
+    var rest=sizes.slice(1), c=map[keys[v]];
+    c.pieces=sizes.length;
+    c.lost=rest.reduce(function(a,b){ return a+b; },0);
+    c.isolated=sizes.filter(function(z){ return z===1; }).length;
+    c.type=rest.some(function(z){ return z>=2; })? "ruptura" : "elo único";
+    c.roles.push(c.type);
+  }
+  // intermediação (Brandes, não dirigido, normalizada)
+  var bc=new Array(n).fill(0);
+  for(var s0=0; s0<n; s0++){
+    var stk=[], P=[], sigma=new Array(n).fill(0), dist=new Array(n).fill(-1), q=[s0], qi=0;
+    for(i=0;i<n;i++) P.push([]);
+    sigma[s0]=1; dist[s0]=0;
+    while(qi<q.length){
+      var w=q[qi++]; stk.push(w);
+      adj[w].forEach(function(e){
+        if(dist[e.to]<0){ dist[e.to]=dist[w]+1; q.push(e.to); }
+        if(dist[e.to]===dist[w]+1){ sigma[e.to]+=sigma[w]; P[e.to].push(w); }
+      });
+    }
+    var delta=new Array(n).fill(0);
+    while(stk.length){
+      var x=stk.pop();
+      P[x].forEach(function(p){ delta[p]+=(sigma[p]/sigma[x])*(1+delta[x]); });
+      if(x!==s0) bc[x]+=delta[x];
+    }
+  }
+  var norm=(n-1)*(n-2);
+  keys.forEach(function(k,idx){ map[k].betw=norm>0? bc[idx]/norm : 0; });
+  var kTop=Math.max(3, Math.ceil(n*0.1));
+  function topSet(valFn, min){
+    var set={};
+    keys.slice().filter(function(k){ return valFn(k)>min; }).sort(function(a,b){ return valFn(b)-valFn(a); }).slice(0,kTop).forEach(function(k){ set[k]=true; });
+    return set;
+  }
+  var topBridge=topSet(function(k){ return map[k].betw; }, 0.0001);
+  var topRef=topSet(function(k){ return degreeHere[k]; }, 1);
+  var list=[];
+  function plural(num,a,b){ return num===1? a : b; }
+  keys.forEach(function(k){
+    var c=map[k];
+    if(topBridge[k]) c.roles.push("ponte");
+    if(topRef[k]) c.roles.push("referência");
+    if(!c.roles.length) return;
+    c.primary=c.type || (topBridge[k]? "ponte" : "referência");
+    var why=[];
+    if(c.type==="ruptura") why.push("Se sair, a rede se parte em "+c.pieces+" blocos e "+c.lost+" "+plural(c.lost,"pessoa fica separada","pessoas ficam separadas")+" do bloco principal.");
+    if(c.type==="elo único") why.push("É a única ligação de "+c.isolated+" "+plural(c.isolated,"pessoa","pessoas")+": se sair, "+plural(c.isolated,"ela fica","elas ficam")+" sem nenhuma ligação.");
+    if(topBridge[k]) why.push("Liga grupos diferentes (intermediação "+c.betw.toFixed(2)+").");
+    if(topRef[k]) why.push("Tem "+degreeHere[k]+" ligações: apoio de muitos, e pode estar sobrecarregada.");
+    var score=c.lost*3+c.isolated*2+(topBridge[k]?2:0)+(topRef[k]?1:0)+c.betw;
+    list.push({key:k, roles:c.roles.slice(), primary:c.primary, why:why, score:score, lost:c.lost});
+  });
+  list.sort(function(a,b){ return b.score-a.score; });
+  return {map:map, list:list.slice(0,15)};
+}
+
 // includeHyp=false (padrão): só laços reais contam na estrutura — é a leitura
 // "de verdade" da rede, usada no painel principal. includeHyp=true: laços
 // hipotéticos também contam como se existissem, usada só para o comparativo
@@ -354,7 +462,9 @@ function computeMetrics(g, includeHyp){
   var centralization = denom>0 ? sumDiff/denom : 0;
   if(centralization>1) centralization=1;
 
+  var crit=analyzeCritical(keys, adj, degreeHere);
   return {
+    crit:crit,
     n:n, m:m, blocks:blocks, giantSize:giantSize,
     density:density, avgDist:avgDist, bridges:bridgeCount,
     centralization:centralization,
@@ -364,6 +474,21 @@ function computeMetrics(g, includeHyp){
 }
 
 function pairKey(a,b){ return a<b ? a+"|"+b : b+"|"+a; }
+
+// simulação "e se…?": devolve uma cópia do grafo sem as pessoas retiradas; os dados no banco não mudam
+function applySim(g){
+  var removed=Object.keys(simRemoved).filter(function(k){ return g.nodes[k]; });
+  if(!removed.length) return g;
+  var nodes={};
+  Object.keys(g.nodes).forEach(function(k){
+    if(simRemoved[k]) return;
+    var o={}; for(var f in g.nodes[k]) o[f]=g.nodes[k][f];
+    o.degree=0; nodes[k]=o;
+  });
+  var edges=g.edges.filter(function(e){ return nodes[e.a] && nodes[e.b]; }).map(function(e){ return {a:e.a,b:e.b,real:e.real,hyp:e.hyp}; });
+  edges.forEach(function(e){ if(e.real){ nodes[e.a].degree++; nodes[e.b].degree++; } });
+  return {nodes:nodes, edges:edges, simulated:true, removedKeys:removed};
+}
 
 // per-node detail shown in the stage side panel when a node in the graph is clicked
 function nodeDetails(key, g, metrics){
@@ -391,7 +516,32 @@ function nodeDetails(key, g, metrics){
 // ---------- rendering ----------
 var root=document.getElementById("root");
 
+// refaz a tela preservando o foco e o cursor do campo em uso (o rascunho já vive em "draft")
 function render(){
+  var a=document.activeElement, f=null;
+  if(a && a.id && root.contains(a)) f={id:a.id, s:a.selectionStart, e:a.selectionEnd};
+  renderNow();
+  if(f){
+    var el=document.getElementById(f.id);
+    if(el){ el.focus(); try{ el.setSelectionRange(f.s,f.e); }catch(err){} }
+  }
+  var rt=parseHash();
+  renderedKey = rt.view+"|"+(rt.code||"");
+  lastEntrarSig = (rt.view==="entrar" && currentSession) ? entrarSig() : "";
+}
+function entrarSig(){
+  var code=currentSession? currentSession.code : "";
+  var myId=localId(code);
+  var me=state.participants.find(function(p){ return p.id===myId; });
+  var mine=state.ties.filter(function(t){ return t.from===myId; }).map(function(t){ return t.id; }).join(",");
+  return [currentSession&&currentSession.id, state.phase, me? me.name : "", mine].join("|");
+}
+function refreshDatalist(){
+  var dl=document.getElementById("ofNamesList"); if(!dl) return;
+  dl.innerHTML=""; knownNames().forEach(function(n){ dl.appendChild(h("option",{value:n})); });
+}
+
+function renderNow(){
   root.innerHTML="";
   var route=parseHash();
 
@@ -430,10 +580,18 @@ function openSession(code, done){
       return;
     }
     notFoundCode=null;
+    if(!currentSession || currentSession.code!==code){ simRemoved={}; selectedKey=null; }
     currentSession={id:res.data.id, code:res.data.code, name:res.data.name, phase:res.data.phase||"coleta"};
     subscribeSession();
     if(done) done(currentSession);
   });
+}
+
+// muitos celulares recebem o mesmo evento ao mesmo tempo: cada um espera um tempo curto e aleatório
+// e as atualizações seguidas viram uma só (evita tempestade de consultas e telas piscando)
+function onChange(){
+  var onStage = parseHash().view==="palco";
+  scheduleLoad(onStage? 400 : 300+Math.random()*1500);
 }
 
 function subscribeSession(){
@@ -441,9 +599,9 @@ function subscribeSession(){
   if(!currentSession) return;
   loadAll();
   sessionChannel=sb.channel("oficina-rede-session-"+currentSession.id)
-    .on("postgres_changes", {event:"*", schema:"public", table:"oficina_rede_participants", filter:"session_id=eq."+currentSession.id}, loadAll)
-    .on("postgres_changes", {event:"*", schema:"public", table:"oficina_rede_ties", filter:"session_id=eq."+currentSession.id}, loadAll)
-    .on("postgres_changes", {event:"*", schema:"public", table:"oficina_rede_sessions", filter:"id=eq."+currentSession.id}, loadAll)
+    .on("postgres_changes", {event:"*", schema:"public", table:"oficina_rede_participants", filter:"session_id=eq."+currentSession.id}, onChange)
+    .on("postgres_changes", {event:"*", schema:"public", table:"oficina_rede_ties", filter:"session_id=eq."+currentSession.id}, onChange)
+    .on("postgres_changes", {event:"*", schema:"public", table:"oficina_rede_sessions", filter:"id=eq."+currentSession.id}, onChange)
     .subscribe();
 }
 
@@ -514,13 +672,13 @@ function renderEntrar(code){
     var card=h("div",{class:"card"});
     card.appendChild(h("label",{},["Seu nome"]));
     card.appendChild(h("datalist",{id:"ofNamesList"}, known.map(function(n){ return h("option",{value:n}); })));
-    var nameInput=h("input",{type:"text", placeholder:"Como você quer aparecer na rede", list:"ofNamesList"});
+    var nameInput=h("input",{type:"text", id:"ofName", value:draft.name, placeholder:"Como você quer aparecer na rede", list:"ofNamesList", oninput:function(){ draft.name=nameInput.value; }});
     card.appendChild(nameInput);
     card.appendChild(h("div",{style:"height:12px"}));
     var btn=h("button",{class:"btn", onclick:function(){
       var val=nameInput.value.trim();
       if(!val){ toast("Digite seu nome"); return; }
-      var suggestion=suggestSimilarName(val, known);
+      var suggestion=suggestSimilarName(val, knownNames());
       if(suggestion){
         var useIt=confirm("Já existe \""+suggestion+"\" nesta oficina.\n\nÉ você?\n\nOK = sim, sou \""+suggestion+"\"\nCancelar = não, sou outra pessoa (\""+val+"\")");
         if(useIt) val=suggestion;
@@ -528,6 +686,7 @@ function renderEntrar(code){
       btn.disabled=true;
       sb.from("oficina_rede_participants").upsert({id:myId, name:val, session_id:currentSession.id}).then(function(res){
         if(res.error){ btn.disabled=false; toast("Não foi possível entrar: "+res.error.message); return; }
+        draft.name="";
         toast("Bem-vindo(a), "+val+"!");
       });
     }},["Entrar na rede"]);
@@ -557,15 +716,14 @@ function renderEntrar(code){
   }
   formCard.appendChild(h("label",{},["Nome da pessoa"]));
   formCard.appendChild(h("datalist",{id:"ofNamesList"}, knownNames().map(function(n){ return h("option",{value:n}); })));
-  var toInput=h("input",{type:"text", placeholder:"Com quem você trabalha / trabalharia?", list:"ofNamesList"});
+  var toInput=h("input",{type:"text", id:"ofTo", value:draft.to, placeholder:"Com quem você trabalha / trabalharia?", list:"ofNamesList", oninput:function(){ draft.to=toInput.value; }});
   formCard.appendChild(toInput);
   formCard.appendChild(h("div",{style:"height:10px"}));
   formCard.appendChild(h("label",{},["Essa pessoa está..."]));
-  var extVal={v:false};
   var segA, segB;
   var seg=h("div",{class:"seg"});
-  segA=h("button",{class:"active", onclick:function(){extVal.v=false; segA.className="active"; segB.className="";}},["Nesta sala"]);
-  segB=h("button",{onclick:function(){extVal.v=true; segB.className="active"; segA.className="";}},["Fora da sala"]);
+  segA=h("button",{class:draft.ext?"":"active", onclick:function(){draft.ext=false; segA.className="active"; segB.className="";}},["Nesta sala"]);
+  segB=h("button",{class:draft.ext?"active":"", onclick:function(){draft.ext=true; segB.className="active"; segA.className="";}},["Fora da sala"]);
   seg.appendChild(segA); seg.appendChild(segB);
   formCard.appendChild(seg);
   formCard.appendChild(h("div",{style:"height:14px"}));
@@ -581,11 +739,11 @@ function renderEntrar(code){
     submitBtn.disabled=true;
     sb.from("oficina_rede_ties").insert({
       from_id: myId, from_name: me.name, to_name: val,
-      external: extVal.v, hypothetical: isExercise, session_id: currentSession.id
+      external: draft.ext, hypothetical: isExercise, session_id: currentSession.id
     }).then(function(res){
       submitBtn.disabled=false;
       if(res.error){ toast("Erro ao salvar: "+res.error.message); return; }
-      toInput.value="";
+      toInput.value=""; draft.to="";
       toast("Laço adicionado!");
     });
   }},[isExercise? "Adicionar hipótese" : "+ Adicionar laço"]);
@@ -766,8 +924,12 @@ function renderStage(code){
     return;
   }
 
-  var g=buildGraph();
+  var gFull=buildGraph();
+  if(state.phase!=="exercicio") simRemoved={};          // a simulação só existe no Exercício
+  var g=applySim(gFull);
   var metrics=computeMetrics(g);
+  var metricsFull = g.simulated ? computeMetrics(gFull) : null;   // "antes", só quando há simulação
+  if(selectedKey && !g.nodes[selectedKey]) selectedKey=null;
   // só calculada quando há laços hipotéticos registrados — é a base do
   // comparativo "com e sem hipotéticos" mostrado mais abaixo
   var metricsHyp = metrics.hypCount>0 ? computeMetrics(g,true) : null;
@@ -805,6 +967,7 @@ function renderStage(code){
         var previousPhase=currentSession.phase;
         // atualização otimista: destaca a fase na hora, sem esperar o tempo
         // real ir e voltar — se der erro, desfaz e avisa
+        if(ph!=="exercicio") simRemoved={};
         currentSession.phase=ph; state.phase=ph; render();
         sb.from("oficina_rede_sessions").update({phase:ph, updated_at:new Date().toISOString()}).eq("id",currentSession.id).then(function(res){
           if(res.error){
@@ -819,7 +982,7 @@ function renderStage(code){
     admin.appendChild(h("div",{style:"height:10px"}));
     var row=h("div",{class:"row"});
     var exportBtn=h("button",{class:"btn secondary", onclick:function(){
-      var payload=JSON.stringify({oficina:currentSession, participants:state.participants, ties:state.ties, metrics:metrics}, null, 2);
+      var payload=JSON.stringify({oficina:currentSession, participants:state.participants, ties:state.ties, metrics:(metricsFull||metrics)}, null, 2);
       var blob=new Blob([payload], {type:"application/json"});
       var a=document.createElement("a");
       a.href=URL.createObjectURL(blob);
@@ -868,11 +1031,16 @@ function renderStage(code){
     layoutSeg.appendChild(b);
   });
   layoutBar.appendChild(layoutSeg);
+  var critToggle=h("button",{class:"btn "+(showCritical?"":"secondary"), style:"width:auto;padding:8px 14px;font-size:13px;margin-left:8px", onclick:function(){
+    showCritical=!showCritical; render();
+  }},[(showCritical?"✓ ":"")+"Destacar nós críticos"]);
+  layoutBar.appendChild(critToggle);
   wrap.appendChild(layoutBar);
 
   // ---- grafo + painel lateral (métricas, legenda, detalhe do nó) ----
   var grid=h("div",{class:"stage-grid"});
   var graphBox=h("div",{class:"graph-box"});
+  if(g.simulated) graphBox.appendChild(h("div",{class:"sim-banner"},["SIMULAÇÃO · "+g.removedKeys.length+(g.removedKeys.length===1?" pessoa retirada":" pessoas retiradas")+" (nada foi apagado)"]));
   grid.appendChild(graphBox);
 
   var side=h("div",{class:"side-sticky"});
@@ -904,7 +1072,9 @@ function renderStage(code){
     h("span",{},[h("span",{class:"dot outline"}), "pessoa de fora"]),
     h("span",{},[h("span",{class:"lineSwatch",style:"border-color:var(--mint2)"}), "laço real"]),
     h("span",{},[h("span",{class:"lineSwatch",style:"border-color:var(--amber);border-top-style:dashed"}), "laço hipotético"])
-  ]));
+  ].concat(showCritical? Object.keys(CRIT).map(function(k){
+    return h("span",{},[h("span",{class:"dot",style:"background:"+CRIT[k].color}), CRIT[k].icon+" "+CRIT[k].text]);
+  }) : [])));
   sidePanels.appendChild(overviewCard);
 
   // comparativo "sem laços hipotéticos" vs "com laços hipotéticos" — duas
@@ -967,6 +1137,20 @@ function renderStage(code){
       ]));
     });
 
+    var cn=metrics.crit.map[key];
+    if(cn && cn.roles.length){
+      nodeInfoBox.appendChild(h("div",{style:"display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid rgba(146,235,208,.08);font-size:13px"},[
+        h("span",{class:"muted"},["Papel crítico"]), h("span",{style:"font-weight:600;text-align:right"},[cn.roles.join(", ")])
+      ]));
+      var lc=metrics.crit.list.filter(function(x){ return x.key===key; })[0];
+      if(lc) lc.why.forEach(function(w){ nodeInfoBox.appendChild(h("div",{class:"muted",style:"font-size:12px;margin-top:6px"},[w])); });
+    }
+    if(isAdmin && state.phase==="exercicio"){
+      nodeInfoBox.appendChild(h("div",{style:"height:10px"}));
+      nodeInfoBox.appendChild(h("button",{class:"btn amber",onclick:function(){
+        simRemoved[key]=true; selectedKey=null; sideTabMemory="sim"; render();
+      }},["Remover da simulação (só nesta tela)"]));
+    }
     if(isAdmin){
       nodeInfoBox.appendChild(h("div",{style:"height:10px"}));
       nodeInfoBox.appendChild(h("label",{},["Mesclar com (mesma pessoa, nome diferente)"]));
@@ -999,17 +1183,104 @@ function renderStage(code){
       nodeInfoBox.appendChild(mergeBtn);
     }
   }
-  renderNodeInfo(null);
+  renderNodeInfo(selectedKey && g.nodes[selectedKey]? selectedKey : null);
   sidePanels.appendChild(nodeInfoBox);
+
+
+  // ---- aba "Críticos": quem sustenta as ligações da rede ----
+  var critCard=h("div",{class:"card"});
+  critCard.appendChild(h("h3",{style:"font-size:15px;margin-bottom:4px"},["Nós críticos"]));
+  critCard.appendChild(h("p",{class:"muted",style:"font-size:12px;margin-bottom:10px"},["Pessoas de cujas ligações a rede depende. Clique em uma para ver os detalhes. Use “Destacar nós críticos” acima para marcá-las no grafo."]));
+  if(!metrics.crit.list.length){
+    critCard.appendChild(h("div",{class:"muted"},["Ainda não há nós críticos. Com mais laços, eles aparecem aqui."]));
+  }
+  metrics.crit.list.forEach(function(c){
+    var node=g.nodes[c.key]; if(!node) return;
+    var item=h("div",{class:"crit-item", style:"--c:"+CRIT[c.primary].color, tabindex:"0", role:"button", onclick:function(){
+      selectedKey=c.key; sideTabMemory="node"; render();
+    }});
+    var title=h("div",{style:"font-weight:600"},[CRIT[c.primary].icon+" "+node.label]);
+    c.roles.forEach(function(r){ title.appendChild(h("span",{class:"tag ext",style:"margin-left:6px"},[r])); });
+    item.appendChild(title);
+    c.why.forEach(function(w){ item.appendChild(h("div",{class:"why"},[w])); });
+    critCard.appendChild(item);
+  });
+  sidePanels.appendChild(critCard);
+
+  // ---- aba "Simular": retirar pessoas só da visão, apenas no Exercício e só para o facilitador ----
+  var simCard=null;
+  if(isAdmin && state.phase==="exercicio"){
+    simCard=h("div",{class:"card"});
+    simCard.appendChild(h("h3",{style:"font-size:15px;margin-bottom:4px"},["Simulação “e se…?”"]));
+    simCard.appendChild(h("p",{class:"muted",style:"font-size:12px;margin-bottom:10px"},["Retire pessoas só desta tela e veja o que muda na rede. Nada é apagado do banco e os celulares não mudam. Vale só neste navegador e some ao sair do Exercício ou ao recarregar a página."]));
+    var pick=h("select",{class:"sel", id:"simPick"});
+    pick.appendChild(h("option",{value:""},["Escolha a pessoa a retirar…"]));
+    Object.keys(g.nodes).sort(function(a,b){ return g.nodes[a].label.localeCompare(g.nodes[b].label); }).forEach(function(k){
+      pick.appendChild(h("option",{value:k},[g.nodes[k].label]));
+    });
+    simCard.appendChild(pick);
+    simCard.appendChild(h("div",{style:"height:8px"}));
+    function simAdd(keys){ keys.forEach(function(k){ simRemoved[k]=true; }); sideTabMemory="sim"; render(); }
+    simCard.appendChild(h("button",{class:"btn amber",onclick:function(){ if(pick.value) simAdd([pick.value]); else toast("Escolha uma pessoa"); }},["Remover da simulação"]));
+    simCard.appendChild(h("div",{style:"height:8px"}));
+    var simRow=h("div",{class:"row"});
+    simRow.appendChild(h("button",{class:"btn secondary",style:"font-size:13px;padding:11px 8px",onclick:function(){
+      simAdd(metrics.crit.list.slice(0,3).map(function(c){ return c.key; }));
+    }},["Retirar as 3 mais críticas"]));
+    simRow.appendChild(h("button",{class:"btn secondary",style:"font-size:13px;padding:11px 8px",onclick:function(){
+      var ks=Object.keys(g.nodes);
+      for(var i=ks.length-1;i>0;i--){ var j=Math.floor(Math.random()*(i+1)); var t=ks[i]; ks[i]=ks[j]; ks[j]=t; }
+      simAdd(ks.slice(0,3));
+    }},["Retirar 3 ao acaso"]));
+    simCard.appendChild(simRow);
+    simCard.appendChild(h("div",{style:"height:8px"}));
+    simCard.appendChild(h("button",{class:"btn ghost",onclick:function(){ simRemoved={}; sideTabMemory="sim"; render(); }},["Restaurar tudo"]));
+    var chips=h("div",{style:"margin-top:10px"});
+    (g.removedKeys||[]).forEach(function(k){
+      var chip=h("span",{class:"chip"},[gFull.nodes[k]? gFull.nodes[k].label : k]);
+      chip.appendChild(h("button",{title:"Restaurar","aria-label":"Restaurar",onclick:function(){ delete simRemoved[k]; sideTabMemory="sim"; render(); }},["↺"]));
+      chips.appendChild(chip);
+    });
+    simCard.appendChild(chips);
+    if(metricsFull){
+      var t4=h("div",{class:"cmp-table",style:"margin-top:10px"});
+      t4.appendChild(h("div",{class:"cmp-row4 cmp-head"},[h("span",{},[""]),h("span",{},["Antes"]),h("span",{},["Agora"]),h("span",{},["Variação"])]));
+      function f2(x){ return x.toFixed(2); }
+      var rows4=[
+        ["Pessoas", metricsFull.n, metrics.n, 0, false],
+        ["Laços reais", metricsFull.m, metrics.m, 0, false],
+        ["Grupos", metricsFull.blocks, metrics.blocks, 0, true],
+        ["Maior grupo", metricsFull.giantSize, metrics.giantSize, 0, false],
+        ["Densidade", metricsFull.density, metrics.density, 2, false],
+        ["Distância média", metricsFull.avgDist, metrics.avgDist, 2, true],
+        ["Laços críticos", metricsFull.bridges, metrics.bridges, 0, true],
+        ["Dependência", metricsFull.centralization, metrics.centralization, 2, true]
+      ];
+      rows4.forEach(function(r){
+        var a=r[1], b=r[2], d=b-a, dec=r[3], same=Math.abs(d)<1e-9;
+        var fmt=function(x){ return dec? x.toFixed(dec) : String(x); };
+        var cls = same? "" : ((d>0)===r[4]? "worse" : "better");
+        t4.appendChild(h("div",{class:"cmp-row4"},[h("span",{class:"muted"},[r[0]]), h("span",{},[fmt(a)]), h("span",{},[fmt(b)]),
+          h("span",{class:cls},[same? "—" : (d>0?"+":"")+fmt(d)])]));
+      });
+      simCard.appendChild(t4);
+      simCard.appendChild(h("p",{class:"muted",style:"font-size:11px;margin-top:8px"},["Vermelho: a rede ficou mais fragmentada ou dependente. Verde: o contrário."]));
+    } else {
+      simCard.appendChild(h("p",{class:"muted",style:"font-size:12px;margin-top:10px"},["Nenhuma pessoa retirada ainda. Use a lista acima, ou clique em um nó no grafo, vá na aba Nó e use “Remover da simulação”."]));
+    }
+    sidePanels.appendChild(simCard);
+  }
 
   // ---- abas do painel lateral: cada card fica inteiro visível junto do grafo,
   // sem precisar descer a página — só uma aba por vez, com rolagem própria ----
   var sideTabDefs=[["metrics","Métricas",overviewCard]];
   if(metricsHyp) sideTabDefs.push(["compare","Comparar",compareCard]);
   sideTabDefs.push(["node","Nó",nodeInfoBox]);
-  var activeSideTab="metrics";
+  sideTabDefs.push(["crit","Críticos",critCard]);
+  if(simCard) sideTabDefs.push(["sim","Simular",simCard]);
+  var activeSideTab=sideTabDefs.some(function(t){ return t[0]===sideTabMemory; })? sideTabMemory : "metrics";
   function showSideTab(name){
-    activeSideTab=name;
+    activeSideTab=name; sideTabMemory=name;
     sideTabDefs.forEach(function(t){
       t[2].style.display = (t[0]===name) ? "" : "none";
     });
@@ -1042,7 +1313,7 @@ function renderStage(code){
   drawGraph(graphBox, g, function(key){
     renderNodeInfo(key);
     showSideTab("node");
-  }, graphLayout);
+  }, graphLayout, {crit:metrics.crit.map, show:showCritical});
 }
 
 // posiciona os nós para os layouts clássicos não-orgânicos: fixa x/y/fx/fy de
@@ -1172,7 +1443,7 @@ function layoutPositions(nodeArr, linkArr, layout, w, hgt){
   }
 }
 
-function drawGraph(container, g, onNodeClick, layout){
+function drawGraph(container, g, onNodeClick, layout, opts){
   if(!window.d3){ container.innerHTML="<div class='muted' style='padding:20px'>Biblioteca de grafo indisponível.</div>"; return; }
   var w=container.clientWidth||800, hgt=container.clientHeight||600;
   var svg=d3.select(container).append("svg").attr("width",w).attr("height",hgt).attr("viewBox","0 0 "+w+" "+hgt);
@@ -1239,20 +1510,33 @@ function drawGraph(container, g, onNodeClick, layout){
     return p==="confirmed"? "#5FE0C6" : (p==="declared"? "#B9A6FF" : "rgba(63,111,134,.3)");
   }
 
+  var critMap=(opts&&opts.crit)||{}, showCrit=!!(opts&&opts.show);
+  function critOf(d){ var c=critMap[d.key]; return (c&&c.primary)? c.primary : ""; }
+  // anel do nó: selecionado (âmbar) > crítico (cor do tipo, quando o destaque está ligado) > fora da sala (tracejado)
+  function ringOf(d){
+    if(selectedKey===d.key) return {c:"#FFC24D", w:3, dash:null};
+    var cp=showCrit? critOf(d) : "";
+    if(cp) return {c:CRIT[cp].color, w:4.5, dash:null};
+    return presenceOf(d)==="out"? {c:"#B9CBDD", w:1.6, dash:"4 3"} : {c:"none", w:0, dash:null};
+  }
+  function dimmed(d){ return showCrit && !critOf(d); }
+
   node.append("circle")
     .attr("r", rOf)
     .attr("fill", presenceFill)
     .attr("filter", function(d){ return presenceOf(d)==="confirmed"? "url(#nodeglow)" : null; })
-    .attr("stroke", function(d){ return presenceOf(d)==="out"? "#B9CBDD" : "none"; })
-    .attr("stroke-width", function(d){ return presenceOf(d)==="out"? 1.6 : 0; })
-    .attr("stroke-dasharray", function(d){ return presenceOf(d)==="out"? "4 3" : null; });
+    .attr("stroke", function(d){ return ringOf(d).c; })
+    .attr("stroke-width", function(d){ return ringOf(d).w; })
+    .attr("stroke-dasharray", function(d){ return ringOf(d).dash; })
+    .attr("opacity", function(d){ return dimmed(d)? .35 : 1; });
 
   node.append("text")
-    .text(function(d){ return d.label + (presenceOf(d)==="out"? " (fora)" : ""); })
+    .text(function(d){ var cp=showCrit? critOf(d) : ""; return (cp? CRIT[cp].icon+" " : "") + d.label + (presenceOf(d)==="out"? " (fora)" : ""); })
+    .attr("opacity", function(d){ return dimmed(d)? .45 : 1; })
     .attr("text-anchor","middle")
     .attr("dy", function(d){ return -(14+Math.min(14,d.degree*2.5)); })
     .attr("fill", function(d){ return presenceOf(d)==="confirmed"? "#fff" : "#B9CBDD"; })
-    .attr("font-family","Poppins").attr("font-weight","600")
+    .attr("font-family","Poppins").attr("font-weight", function(d){ return (showCrit && critOf(d))? "700" : "600"; })
     .attr("font-style", function(d){ return presenceOf(d)==="out"? "italic" : "normal"; })
     .attr("font-size","12px")
     .style("pointer-events","none");
@@ -1287,10 +1571,11 @@ function drawGraph(container, g, onNodeClick, layout){
   node.on("click", function(event,d){
     if(d.__dragged){ d.__dragged=false; return; }
     event.stopPropagation();
+    selectedKey=d.key;
     node.select("circle")
-      .attr("stroke", function(dd){ return dd.key===d.key? "#FFC24D" : (presenceOf(dd)==="out"? "#B9CBDD" : "none"); })
-      .attr("stroke-width", function(dd){ return dd.key===d.key? 3 : (presenceOf(dd)==="out"? 1.6 : 0); })
-      .attr("stroke-dasharray", function(dd){ return dd.key===d.key? null : (presenceOf(dd)==="out"? "4 3" : null); });
+      .attr("stroke", function(dd){ return ringOf(dd).c; })
+      .attr("stroke-width", function(dd){ return ringOf(dd).w; })
+      .attr("stroke-dasharray", function(dd){ return ringOf(dd).dash; });
     if(typeof onNodeClick==="function") onNodeClick(d.key);
   });
 
@@ -1347,12 +1632,31 @@ function mergeNodes(sourceKey, canonicalLabel){
   });
 }
 
-async function loadAll(){
+// uma consulta por vez (se chegar outra enquanto isso, roda de novo no fim), com atraso opcional
+function scheduleLoad(delay){
+  if(loadTimer) return;
+  loadTimer=setTimeout(function(){ loadTimer=null; runLoad(); }, delay==null? 350 : delay);
+}
+function runLoad(){
+  if(loading){ loadAgain=true; return Promise.resolve(); }
+  loading=true;
+  return loadCore().catch(function(e){ console.error("load",e); }).then(function(){
+    loading=false;
+    if(loadAgain){ loadAgain=false; scheduleLoad(150); }
+  });
+}
+function loadAll(){ return runLoad(); }
+
+async function loadCore(){
   if(!currentSession){ state.participants=[]; state.ties=[]; state.loaded=true; render(); return; }
   var sid=currentSession.id;
-  var p=await sb.from("oficina_rede_participants").select("*").eq("session_id",sid);
-  var t=await sb.from("oficina_rede_ties").select("*").eq("session_id",sid);
-  var s=await sb.from("oficina_rede_sessions").select("*").eq("id",sid).maybeSingle();
+  var res3=await Promise.all([
+    sb.from("oficina_rede_participants").select("*").eq("session_id",sid),
+    sb.from("oficina_rede_ties").select("*").eq("session_id",sid),
+    sb.from("oficina_rede_sessions").select("*").eq("id",sid).maybeSingle()
+  ]);
+  var p=res3[0], t=res3[1], s=res3[2];
+  if(!currentSession || currentSession.id!==sid) return; // trocou de oficina durante a consulta
   if(p.error) console.error("participants",p.error);
   else state.participants=p.data.map(function(r){ return {id:r.id, name:r.name}; });
   if(t.error) console.error("ties",t.error);
@@ -1366,6 +1670,13 @@ async function loadAll(){
     state.phase=currentSession.phase;
   }
   state.loaded=true;
+  // na entrada do participante, só refaz a tela se algo que ELE vê mudou (ele mesmo, seus laços, a fase);
+  // quando outras pessoas agem, só atualiza a lista de sugestões e deixa o formulário em paz
+  var rt=parseHash();
+  if(rt.view==="entrar" && rt.code && renderedKey==="entrar|"+rt.code && entrarSig()===lastEntrarSig){
+    refreshDatalist();
+    return;
+  }
   render();
 }
 
