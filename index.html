@@ -111,6 +111,13 @@
   .graph-legend{position:absolute; left:12px; bottom:28px; z-index:4; background:rgba(8,20,36,.8); border:1px solid rgba(146,235,208,.18); border-radius:12px; padding:8px 12px; font-size:11.5px; color:var(--ink-soft); display:flex; flex-direction:column; gap:5px; max-width:270px; pointer-events:none}
   .graph-legend span{display:flex; align-items:center; gap:7px}
   .graph-legend .lg-title{font-size:10px; letter-spacing:.08em; text-transform:uppercase; opacity:.7}
+  .phase-banner.vinculos{background:rgba(185,166,255,.14); color:var(--indic); border:1px solid rgba(185,166,255,.35)}
+  .net-opt{display:flex; width:100%; align-items:baseline; gap:8px; text-align:left; padding:11px 12px; margin-top:6px; border-radius:10px; border:1px solid rgba(146,235,208,.25); background:rgba(255,255,255,.05); color:var(--ink); font-family:var(--body); font-size:14px; cursor:pointer}
+  .net-opt b{font-weight:700} .net-opt small{color:var(--ink-soft); font-size:12px}
+  .net-opt.add{border-style:dashed; color:var(--amber)}
+  .net-rank{border:1px solid rgba(146,235,208,.14); border-left:6px solid var(--c,#999); border-radius:10px; padding:8px 11px; margin-bottom:7px; cursor:pointer}
+  .net-rank:hover{background:rgba(255,255,255,.05)}
+  .net-rank .sub{font-size:12px; color:var(--ink-soft); margin-top:2px; line-height:1.35}
   select.sel{width:100%; padding:11px 12px; border-radius:10px; border:1px solid rgba(146,235,208,.25); background:rgba(255,255,255,.06); color:var(--ink); font-family:var(--body); font-size:14px}
   select.sel option{color:#000}
 </style>
@@ -130,6 +137,7 @@ var sb=null, isAdmin=false;
 var state={
   phase:"coleta",
   participants:[], // {id, name}
+  memberships:[],  // {id, participantId, key, name, listed}
   ties:[],         // {id, from, fromName, to, external, hypothetical, createdAt}
   loaded:false
 };
@@ -157,9 +165,14 @@ function simEdited(){ return simHypOff || Object.keys(simRemoved).length>0 || Ob
 var selectedKey=null;      // nó selecionado no grafo (sobrevive aos re-renders)
 var sideTabMemory="metrics";
 // rascunho do formulário do participante: sobrevive aos re-renders que chegam quando OUTRAS pessoas agem
-var draft={name:"", to:"", ext:false};
+var draft={name:"", to:"", ext:false, net:""};
 var loading=false, loadAgain=false, loadTimer=null;
 var renderedKey="", lastEntrarSig="";
+var stageTab="colab";          // colab | vinc  (palco: rede de colaboração ou vínculo com redes de EA)
+var lastPhaseSeen=null;
+var vincMode="pessoas";        // pessoas | redes
+var vincShowEmpty=true;        // mostrar redes da lista sem representante na sala
+var vincSelected=null;         // rede selecionada (chave)
 
 function parseHash(){
   var hRaw=(location.hash||"").replace("#","");
@@ -301,6 +314,55 @@ function buildGraph(){
   return {nodes:nodes, edges:edges};
 }
 
+
+// ---------- redes de EA da Facilitação Nacional da REBEA (atualização de 5 de novembro de 2026) ----------
+var REDE_CATS={
+  tematica:{label:"Temáticas", color:"#7AA7FF"},
+  juventude:{label:"Juventudes", color:"#FFC24D"},
+  sudeste:{label:"Territoriais · Sudeste", color:"#5FE0C6"},
+  norte:{label:"Territoriais · Norte", color:"#8BE06B"},
+  nordeste:{label:"Territoriais · Nordeste", color:"#FF9B6B"},
+  centro:{label:"Territoriais · Centro-Oeste", color:"#D58BFF"},
+  sul:{label:"Territoriais · Sul", color:"#FF7BA9"},
+  outras:{label:"Outras redes (fora da lista)", color:"#B9CBDD"}
+};
+var REDES_LISTA=[
+  ["REAPOP","Rede de Educação Ambiental e Políticas Públicas","tematica"],
+  ["REACOMAR","Rede de Educação Ambiental Costeira e Marinha","tematica"],
+  ["RUPEA","Rede Universitária de Programas de Educação Ambiental","tematica"],
+  ["REALIC","Rede de Educação Ambiental no Licenciamento Ambiental","tematica"],
+  ["REA-IESBA","Rede de Educação Ambiental das Instituições de Ensino Superior da Bahia","tematica"],
+  ["REJUMA","Rede de Juventude e Meio Ambiente","juventude"],
+  ["Rede Olhares da Juventude","Rede Olhares da Juventude","juventude"],
+  ["REPEA","Rede Paulista de Educação Ambiental","sudeste"],
+  ["RMEA","Rede Mineira de Educação Ambiental","sudeste"],
+  ["RECEA","Rede Capixaba de Educação Ambiental","sudeste"],
+  ["REA São Carlos","REA São Carlos","sudeste"],
+  ["REARJ","Rede de Educação Ambiental do Rio de Janeiro","sudeste"],
+  ["REABJ","Rede de Educadoras e Educadores Ambientais da Baixada de Jacarepaguá","sudeste"],
+  ["REAZO","Rede de Educação Ambiental da Zona Oeste","sudeste"],
+  ["REA Costa Verde","REA Costa Verde","sudeste"],
+  ["REASG","Rede de Educação Ambiental de São Gonçalo","sudeste"],
+  ["REARO","Rede de Educação Ambiental de Rondônia","norte"],
+  ["REPAEA","Rede Paraense de Educação Ambiental","norte"],
+  ["REA Amapá","REA Amapá","norte"],
+  ["REATO","Rede de Educação Ambiental do Tocantins","norte"],
+  ["ROBEA","Rede de Educação Ambiental do Oeste da Bahia","nordeste"],
+  ["REABA","Rede de Educação Ambiental da Bahia","nordeste"],
+  ["REAAL","Rede de Educação Ambiental de Alagoas","nordeste"],
+  ["REASPB","Rede de Educação Ambiental e Sustentabilidade da Paraíba","nordeste"],
+  ["REASE","Rede de Educação Ambiental de Sergipe","nordeste"],
+  ["REARN","Rede de Educação Ambiental do Rio Grande do Norte","nordeste"],
+  ["REIA-GO","Rede de Educação e Informação Ambiental de Goiás","centro"],
+  ["REAMS","Rede de Educação Ambiental do Mato Grosso do Sul","centro"],
+  ["REMTEA","Rede Matogrossense de Educação Ambiental","centro"],
+  ["Rede Distrital de EA","Rede Distrital de Educação Ambiental","centro"],
+  ["REA-PR","Rede de Educação Ambiental do Paraná","sul"],
+  ["REASUL","Rede de Educação Ambiental do Sul","sul"],
+  ["Rede Araucarias","Rede Araucarias","sul"],
+  ["Rede Linha Ecológica","Rede Linha Ecológica","sul"]
+].map(function(r){ return {key:normName(r[0]), label:r[0], nome:r[1], cat:r[2]}; });
+var REDE_BY_KEY={}; REDES_LISTA.forEach(function(r){ REDE_BY_KEY[r.key]=r; });
 
 // ---------- nós críticos ----------
 // ruptura: a saída da pessoa separa blocos de 2+ pessoas; elo único: só deixa pessoas sem nenhuma ligação;
@@ -514,6 +576,279 @@ function buildScenario(gFull){
   return {decl:decl, sim:sim, union:uni, added:added, cut:cutN};
 }
 
+
+// ---- palco: vínculo com redes de EA (REBEA no centro, redes e pessoas ao redor) ----
+function buildAffil(){
+  var nets={}, people={};
+  REDES_LISTA.forEach(function(r){ nets[r.key]={key:r.key, label:r.label, full:r.nome, cat:r.cat, listed:true, members:[]}; });
+  state.participants.forEach(function(p){ people[p.id]={id:p.id, name:p.name, nets:[]}; });
+  state.memberships.forEach(function(m){
+    var pe=people[m.participantId]; if(!pe) return;
+    var n=nets[m.key];
+    if(!n){ n=nets[m.key]={key:m.key, label:m.name, full:m.name, cat:"outras", listed:false, members:[]}; }
+    if(n.members.indexOf(pe.id)<0){ n.members.push(pe.id); pe.nets.push(m.key); }
+  });
+  return {nets:nets, people:people};
+}
+
+function renderVinculosStage(wrap){
+  var A=buildAffil();
+  var netList=Object.keys(A.nets).map(function(k){ return A.nets[k]; });
+  var peopleList=Object.keys(A.people).map(function(k){ return A.people[k]; });
+  var listedTotal=REDES_LISTA.length;
+  var present=netList.filter(function(n){ return n.listed && n.members.length>0; });
+  var others=netList.filter(function(n){ return !n.listed && n.members.length>0; });
+  var indicated=peopleList.filter(function(p){ return p.nets.length>0; });
+  var multi=indicated.filter(function(p){ return p.nets.length>1; });
+  var without=peopleList.filter(function(p){ return p.nets.length===0; });
+  var totalLinks=indicated.reduce(function(a,p){ return a+p.nets.length; },0);
+  var avg=indicated.length? totalLinks/indicated.length : 0;
+  var absent=netList.filter(function(n){ return n.listed && n.members.length===0; });
+  var byMembers=netList.filter(function(n){ return n.members.length>0; }).sort(function(a,b){ return b.members.length-a.members.length || a.label.localeCompare(b.label); });
+  var labelOf=function(k){ return A.nets[k]? A.nets[k].label : k; };
+  var nameOf=function(id){ return A.people[id]? A.people[id].name : id; };
+  if(vincSelected && !A.nets[vincSelected]) vincSelected=null;
+
+  // barra de opções
+  var bar=h("div",{style:"display:flex;align-items:center;gap:10px;margin:10px 0;flex-wrap:wrap"},[
+    h("span",{class:"muted", style:"font-size:12px;letter-spacing:.06em;text-transform:uppercase"},["Mostrar:"])
+  ]);
+  var seg=h("div",{class:"seg", style:"width:auto"});
+  [["pessoas","Pessoas e redes"],["redes","Só redes (ligadas por pessoas em comum)"]].forEach(function(p){
+    seg.appendChild(h("button",{class: vincMode===p[0]?"active":"", style:"flex:none;padding:8px 16px", onclick:function(){ if(vincMode===p[0]) return; vincMode=p[0]; render(); }},[p[1]]));
+  });
+  bar.appendChild(seg);
+  bar.appendChild(h("button",{class:"btn "+(vincShowEmpty?"":"secondary"), style:"width:auto;padding:8px 14px;font-size:13px",onclick:function(){ vincShowEmpty=!vincShowEmpty; render(); }},[(vincShowEmpty?"✓ ":"")+"Redes da lista sem representante"]));
+  wrap.appendChild(bar);
+
+  var grid=h("div",{class:"stage-grid"});
+  var graphBox=h("div",{class:"graph-box"});
+  grid.appendChild(graphBox);
+
+  // ---- painel lateral ----
+  var side=h("div",{class:"side-sticky"});
+  var sideTabs=h("div",{class:"seg side-tabs", style:"margin-bottom:12px"});
+  var panels=h("div",{class:"side-panels"});
+
+  var resumo=h("div",{class:"card"});
+  resumo.appendChild(h("h3",{style:"font-size:15px;margin-bottom:10px"},["Vínculo com redes de EA"]));
+  var grid2=h("div",{class:"metrics"});
+  function met(k,v,wide,hint){
+    var kids=[h("div",{class:"k"},[k]), h("div",{class:"v"},[v])];
+    if(hint) kids.push(h("div",{class:"hint"},[hint]));
+    return h("div",{class:"metric"+(wide?" wide":"")},kids);
+  }
+  grid2.appendChild(met("Redes da lista com gente aqui", present.length+" de "+listedTotal));
+  grid2.appendChild(met("Outras redes citadas", String(others.length)));
+  grid2.appendChild(met("Pessoas que indicaram", indicated.length+" de "+peopleList.length));
+  grid2.appendChild(met("Redes por pessoa (média)", avg? avg.toFixed(1) : "—"));
+  grid2.appendChild(met("Pessoas em 2 ou mais redes", String(multi.length), true, "são as que conectam redes entre si"));
+  resumo.appendChild(grid2);
+  resumo.appendChild(h("div",{style:"height:12px"}));
+  resumo.appendChild(h("label",{},["Leitura"]));
+  var leitura=[];
+  if(!indicated.length) leitura.push("Ninguém indicou rede ainda. Conforme as pessoas indicarem, o grafo se forma em volta da REBEA.");
+  else {
+    leitura.push("Há representantes de "+present.length+" das "+listedTotal+" redes da Facilitação Nacional"+(others.length? ", além de "+others.length+(others.length===1?" outra rede":" outras redes")+" fora da lista" : "")+".");
+    if(byMembers.length) leitura.push("A rede com mais pessoas aqui é "+byMembers[0].label+" ("+byMembers[0].members.length+(byMembers[0].members.length===1?" pessoa":" pessoas")+").");
+    if(multi.length) leitura.push(multi.length+(multi.length===1?" pessoa participa":" pessoas participam")+" de mais de uma rede. São elas que fazem as redes se tocarem; sem elas, esses grupos não teriam ninguém em comum.");
+    else leitura.push("Cada pessoa indicou uma única rede até agora: as redes ainda não têm ninguém em comum.");
+    if(absent.length) leitura.push(absent.length+(absent.length===1?" rede da lista não tem":" redes da lista não têm")+" ninguém na sala"+(absent.length<=8? ": "+absent.map(function(n){ return n.label; }).join(", ")+"." : "."));
+    if(without.length) leitura.push(without.length+(without.length===1?" pessoa ainda não indicou":" pessoas ainda não indicaram")+" rede.");
+  }
+  leitura.forEach(function(t){ resumo.appendChild(h("p",{class:"muted",style:"font-size:13px;margin:6px 0;line-height:1.45"},[t])); });
+  panels.appendChild(resumo);
+
+  var redesCard=h("div",{class:"card"});
+  redesCard.appendChild(h("h3",{style:"font-size:15px;margin-bottom:4px"},["Redes"]));
+  redesCard.appendChild(h("p",{class:"muted",style:"font-size:12px;margin-bottom:10px"},["Clique para destacar uma rede e ver quem está nela."]));
+  byMembers.forEach(function(n){
+    var it=h("div",{class:"net-rank", style:"--c:"+REDE_CATS[n.cat].color+(vincSelected===n.key?";background:rgba(255,194,77,.10)":""), onclick:function(){ vincSelected=(vincSelected===n.key? null : n.key); render(); }});
+    it.appendChild(h("div",{style:"font-weight:600"},[n.label+" · "+n.members.length+(n.members.length===1?" pessoa":" pessoas")]));
+    if(n.full!==n.label) it.appendChild(h("div",{class:"sub"},[n.full]));
+    if(vincSelected===n.key) it.appendChild(h("div",{class:"sub",style:"color:var(--ink)"},[n.members.map(nameOf).sort(function(a,b){ return a.localeCompare(b); }).join(", ")]));
+    redesCard.appendChild(it);
+  });
+  if(absent.length){
+    redesCard.appendChild(h("label",{style:"margin-top:12px"},["Sem representante na sala ("+absent.length+")"]));
+    redesCard.appendChild(h("p",{class:"muted",style:"font-size:12.5px;line-height:1.5"},[absent.map(function(n){ return n.label; }).join(" · ")]));
+  }
+  panels.appendChild(redesCard);
+
+  var pesCard=h("div",{class:"card"});
+  pesCard.appendChild(h("h3",{style:"font-size:15px;margin-bottom:10px"},["Pessoas"]));
+  pesCard.appendChild(h("label",{},["Em 2 ou mais redes ("+multi.length+")"]));
+  if(!multi.length) pesCard.appendChild(h("p",{class:"muted",style:"font-size:12.5px"},["Ninguém ainda."]));
+  multi.sort(function(a,b){ return b.nets.length-a.nets.length || a.name.localeCompare(b.name); }).forEach(function(p){
+    pesCard.appendChild(h("div",{style:"padding:6px 0;border-bottom:1px solid rgba(146,235,208,.08);font-size:13px"},[
+      h("div",{style:"font-weight:600"},[p.name]), h("div",{class:"muted",style:"font-size:12px"},[p.nets.map(labelOf).join(" · ")])
+    ]));
+  });
+  pesCard.appendChild(h("label",{style:"margin-top:14px"},["Ainda sem indicação ("+without.length+")"]));
+  pesCard.appendChild(h("p",{class:"muted",style:"font-size:12.5px;line-height:1.5"},[without.length? without.map(function(p){ return p.name; }).sort(function(a,b){ return a.localeCompare(b); }).join(" · ") : "Todos já indicaram."]));
+  panels.appendChild(pesCard);
+
+  var defs=[["resumo","Resumo",resumo],["redes","Redes",redesCard],["pessoas","Pessoas",pesCard]];
+  function showTab(name){
+    sideTabMemory="v:"+name;
+    defs.forEach(function(t){ t[2].style.display=(t[0]===name)?"":"none"; });
+    Array.prototype.forEach.call(sideTabs.children,function(b,i){ b.className=(defs[i][0]===name?"active":""); });
+    panels.scrollTop=0;
+  }
+  defs.forEach(function(t){ sideTabs.appendChild(h("button",{onclick:function(){ showTab(t[0]); }},[t[1]])); });
+  var startTab = (sideTabMemory||"").indexOf("v:")===0? sideTabMemory.slice(2) : (vincSelected? "redes" : "resumo");
+  if(!defs.some(function(t){ return t[0]===startTab; })) startTab="resumo";
+  showTab(startTab);
+  side.appendChild(sideTabs); side.appendChild(panels);
+  wrap.appendChild(grid);
+  grid.appendChild(side);
+
+  drawAffil(graphBox, A, {mode:vincMode, showEmpty:vincShowEmpty, selected:vincSelected, onNet:function(k){ vincSelected=(vincSelected===k? null : k); sideTabMemory="v:redes"; render(); }});
+
+  // legenda dentro do grafo
+  var lg=h("div",{class:"graph-legend"});
+  function lgi(sw,txt){ lg.appendChild(h("span",{},[sw,txt])); }
+  lgi(h("span",{class:"dot",style:"background:#0F3B5F;border:2px solid var(--mint)"}),"REBEA (centro)");
+  Object.keys(REDE_CATS).forEach(function(k){
+    if(k==="outras" && !others.length) return;
+    lgi(h("span",{style:"width:10px;height:10px;border-radius:2px;display:inline-block;background:"+REDE_CATS[k].color}),REDE_CATS[k].label);
+  });
+  if(vincMode==="pessoas"){
+    lgi(h("span",{class:"dot",style:"background:#E6F4FF"}),"pessoa");
+    lgi(h("span",{class:"dot",style:"background:#E6F4FF;box-shadow:0 0 0 2px var(--amber)"}),"pessoa em 2 ou mais redes");
+  } else {
+    lgi(h("span",{class:"lineSwatch",style:"border-color:var(--amber)"}),"pessoas em comum (espessura = quantas)");
+  }
+  graphBox.appendChild(lg);
+}
+
+function drawAffil(container, A, opts){
+  if(!window.d3){ container.innerHTML="<div class='muted' style='padding:20px'>Biblioteca de grafo indisponível.</div>"; return; }
+  var w=container.clientWidth||800, hgt=container.clientHeight||600;
+  var svg=d3.select(container).append("svg").attr("width","100%").attr("height","100%").attr("viewBox","0 0 "+w+" "+hgt);
+  svg.style("cursor","grab");
+  var viewport=svg.append("g");
+  var peopleMode=opts.mode==="pessoas";
+  var peopleCount=Object.keys(A.people).filter(function(k){ return A.people[k].nets.length>0; }).length;
+
+  var nodes=[], links=[];
+  var rebea={id:"rebea", type:"rebea", label:"REBEA", fx:w/2, fy:hgt/2, x:w/2, y:hgt/2};
+  nodes.push(rebea);
+  var netNodes={};
+  Object.keys(A.nets).forEach(function(k){
+    var n=A.nets[k];
+    if(n.members.length===0 && !(opts.showEmpty && n.listed)) return;
+    var o={id:"n:"+k, type:"net", key:k, label:n.label, full:n.full, cat:n.cat, listed:n.listed, count:n.members.length};
+    netNodes[k]=o; nodes.push(o);
+    links.push({source:"rebea", target:o.id, kind:n.listed? "hub":"hubx"});
+  });
+  var memberOfSel={};
+  if(opts.selected && A.nets[opts.selected]) A.nets[opts.selected].members.forEach(function(id){ memberOfSel[id]=true; });
+  if(peopleMode){
+    Object.keys(A.people).forEach(function(id){
+      var p=A.people[id]; if(!p.nets.length) return;
+      var o={id:"p:"+id, type:"person", pid:id, label:p.name, nets:p.nets, multi:p.nets.length>1};
+      nodes.push(o);
+      p.nets.forEach(function(k){ if(netNodes[k]) links.push({source:o.id, target:"n:"+k, kind:"member"}); });
+    });
+  } else {
+    var pair={};
+    Object.keys(A.people).forEach(function(id){
+      var ns=A.people[id].nets;
+      for(var i=0;i<ns.length;i++) for(var j=i+1;j<ns.length;j++){
+        var a=ns[i], b=ns[j]; if(a>b){ var t=a; a=b; b=t; }
+        pair[a+"|"+b]=(pair[a+"|"+b]||0)+1;
+      }
+    });
+    Object.keys(pair).forEach(function(k){
+      var ab=k.split("|"); if(netNodes[ab[0]] && netNodes[ab[1]]) links.push({source:"n:"+ab[0], target:"n:"+ab[1], kind:"shared", w:pair[k]});
+    });
+  }
+  nodes.forEach(function(d){ var p=posCache["v:"+d.id]; if(p && d.type!=="rebea"){ d.x=p.x; d.y=p.y; } });
+  function rOf(d){
+    if(d.type==="rebea") return 32;
+    if(d.type==="net") return 9+Math.sqrt(d.count)*6;
+    return d.multi? 8.5 : 6;
+  }
+  var sim=d3.forceSimulation(nodes)
+    .force("link", d3.forceLink(links).id(function(d){ return d.id; })
+      .distance(function(l){ return l.kind==="hub"? 190 : (l.kind==="hubx"? 230 : (l.kind==="shared"? 120 : 52)); })
+      .strength(function(l){ return l.kind==="hub"? 0.35 : (l.kind==="hubx"? 0.25 : (l.kind==="shared"? 0.15 : 0.6)); }))
+    .force("charge", d3.forceManyBody().strength(function(d){ return d.type==="net"? -420 : (d.type==="rebea"? -600 : -90); }).distanceMax(800))
+    .force("x", d3.forceX(w/2).strength(0.045))
+    .force("y", d3.forceY(hgt/2).strength(0.045))
+    .force("collide", d3.forceCollide(function(d){ return rOf(d)+(d.type==="person"?3:10); }).iterations(2))
+    .alphaDecay(0.02).velocityDecay(0.38);
+
+  var sel=opts.selected;
+  function dim(d){
+    if(!sel) return false;
+    if(d.type==="rebea") return false;
+    if(d.type==="net") return d.key!==sel;
+    return !memberOfSel[d.pid];
+  }
+  var link=viewport.append("g").selectAll("line").data(links).enter().append("line")
+    .attr("stroke", function(d){ return d.kind==="shared"? "#FFC24D" : (d.kind==="member"? "#8FB7CF" : "#5FE0C6"); })
+    .attr("stroke-width", function(d){ return d.kind==="shared"? 1.5+d.w*1.5 : (d.kind==="member"? 1.2 : 1.4); })
+    .attr("stroke-dasharray", function(d){ return d.kind==="hubx"? "4 5" : null; })
+    .attr("opacity", function(d){
+      var base = d.kind==="member"? .55 : (d.kind==="shared"? .8 : .28);
+      if(sel){
+        var s=typeof d.source==="object"? d.source : {id:d.source}, t=typeof d.target==="object"? d.target : {id:d.target};
+        var on = (s.id==="n:"+sel || t.id==="n:"+sel);
+        return on? .95 : .06;
+      }
+      return base;
+    });
+  var node=viewport.append("g").selectAll("g").data(nodes).enter().append("g").style("cursor", function(d){ return d.type==="net"? "pointer":"grab"; });
+  node.each(function(d){
+    var g=d3.select(this);
+    if(d.type==="rebea"){
+      g.append("circle").attr("r",32).attr("fill","#0F3B5F").attr("stroke","#5FE0C6").attr("stroke-width",3);
+      g.append("text").text("REBEA").attr("text-anchor","middle").attr("dy","0.35em").attr("fill","#fff").attr("font-family","Poppins").attr("font-weight","700").attr("font-size","13px").style("pointer-events","none");
+    } else if(d.type==="net"){
+      var r=rOf(d), col=REDE_CATS[d.cat].color;
+      g.append("rect").attr("x",-r).attr("y",-r).attr("width",2*r).attr("height",2*r).attr("rx",4)
+        .attr("fill", d.count? col : "none").attr("fill-opacity", d.count? .9 : 0)
+        .attr("stroke", sel===d.key? "#FFFFFF" : col).attr("stroke-width", sel===d.key? 3 : (d.count? 1.5 : 1.5))
+        .attr("stroke-dasharray", d.count? null : "3 3")
+        .attr("opacity", dim(d)? .18 : (d.count? 1 : .55));
+      g.append("text").text(d.label).attr("text-anchor","middle").attr("dy", -(r+5))
+        .attr("fill", d.count? "#fff" : "#B9CBDD").attr("font-family","Poppins").attr("font-weight", d.count? "700":"500").attr("font-size", d.count? "11.5px":"10px")
+        .attr("opacity", dim(d)? .2 : (d.count? 1 : .6)).style("pointer-events","none");
+      g.append("title").text(d.full+(d.count? " · "+d.count+(d.count===1?" pessoa":" pessoas") : " · sem representante na sala"));
+    } else {
+      var rp=rOf(d);
+      g.append("circle").attr("r",rp).attr("fill","#E6F4FF").attr("stroke", d.multi? "#FFC24D":"none").attr("stroke-width", d.multi? 3:0)
+        .attr("opacity", dim(d)? .15 : 1);
+      var showName = d.multi || (sel && memberOfSel[d.pid]) || peopleCount<=12;
+      if(showName) g.append("text").text(d.label).attr("text-anchor","middle").attr("dy", -(rp+4)).attr("fill", d.multi? "#FFC24D":"#B9CBDD")
+        .attr("font-family","Poppins").attr("font-size","10.5px").attr("font-weight", d.multi? "700":"500").attr("opacity", dim(d)? .15 : 1).style("pointer-events","none");
+      g.append("title").text(d.label+" · "+d.nets.map(function(k){ return A.nets[k]? A.nets[k].label : k; }).join(", "));
+    }
+  });
+  node.on("click", function(event,d){ if(d.__dragged){ d.__dragged=false; return; } if(d.type==="net" && opts.onNet){ event.stopPropagation(); opts.onNet(d.key); } });
+  var zoom=d3.zoom().scaleExtent([0.3,4]).on("zoom", function(ev){ viewport.attr("transform", ev.transform); });
+  svg.call(zoom); svg.on("dblclick.zoom", null);
+  svg.on("dblclick", function(){ svg.transition().duration(300).call(zoom.transform, d3.zoomIdentity); });
+  svg.on("click", function(){ if(opts.selected && opts.onNet) opts.onNet(opts.selected); });
+  node.call(d3.drag()
+    .on("start", function(ev,d){ if(d.type==="rebea") return; if(!ev.active) sim.alphaTarget(0.25).restart(); d.fx=d.x; d.fy=d.y; d.__dragged=false; })
+    .on("drag", function(ev,d){ if(d.type==="rebea") return; d.fx=ev.x; d.fy=ev.y; d.__dragged=true; })
+    .on("end", function(ev,d){ sim.alphaTarget(0); }));
+  var hint=document.createElement("div"); hint.className="graph-hint";
+  hint.textContent="Clique numa rede para destacar · arraste os nós · role para zoom · duplo clique para centralizar";
+  container.appendChild(hint);
+  sim.on("tick", function(){
+    nodes.forEach(function(d){
+      if(d.type!=="rebea"){ var r=rOf(d)+14; if(d.fx==null) d.x=Math.max(r,Math.min(w-r,d.x)); if(d.fy==null) d.y=Math.max(r+8,Math.min(hgt-r,d.y)); }
+      posCache["v:"+d.id]={x:d.x,y:d.y};
+    });
+    link.attr("x1",function(d){return d.source.x;}).attr("y1",function(d){return d.source.y;}).attr("x2",function(d){return d.target.x;}).attr("y2",function(d){return d.target.y;});
+    node.attr("transform", function(d){ return "translate("+d.x+","+d.y+")"; });
+  });
+}
+
 // per-node detail shown in the stage side panel when a node in the graph is clicked
 function nodeDetails(key, g, metrics){
   var node=g.nodes[key];
@@ -558,7 +893,8 @@ function entrarSig(){
   var myId=localId(code);
   var me=state.participants.find(function(p){ return p.id===myId; });
   var mine=state.ties.filter(function(t){ return t.from===myId; }).map(function(t){ return t.id; }).join(",");
-  return [currentSession&&currentSession.id, state.phase, me? me.name : "", mine].join("|");
+  var mm=state.memberships.filter(function(m){ return m.participantId===myId; }).map(function(m){ return m.id; }).join(",");
+  return [currentSession&&currentSession.id, state.phase, me? me.name : "", mine, mm].join("|");
 }
 function refreshDatalist(){
   var dl=document.getElementById("ofNamesList"); if(!dl) return;
@@ -625,6 +961,7 @@ function subscribeSession(){
   sessionChannel=sb.channel("oficina-rede-session-"+currentSession.id)
     .on("postgres_changes", {event:"*", schema:"public", table:"oficina_rede_participants", filter:"session_id=eq."+currentSession.id}, onChange)
     .on("postgres_changes", {event:"*", schema:"public", table:"oficina_rede_ties", filter:"session_id=eq."+currentSession.id}, onChange)
+    .on("postgres_changes", {event:"*", schema:"public", table:"oficina_rede_memberships", filter:"session_id=eq."+currentSession.id}, onChange)
     .on("postgres_changes", {event:"*", schema:"public", table:"oficina_rede_sessions", filter:"id=eq."+currentSession.id}, onChange)
     .subscribe();
 }
@@ -634,7 +971,7 @@ function brandBar(){
 }
 
 function phaseBanner(){
-  var map={coleta:"Fase: coleta de laços reais", exercicio:"Fase: exercício — laços hipotéticos", encerrado:"Oficina encerrada — obrigado!"};
+  var map={vinculos:"Fase: vínculos com redes de EA", coleta:"Fase: coleta de laços reais", exercicio:"Fase: exercício — laços hipotéticos", encerrado:"Oficina encerrada — obrigado!"};
   return h("div",{class:"phase-banner "+state.phase},[map[state.phase]||""]);
 }
 
@@ -642,6 +979,99 @@ function toast(msg){
   var t=h("div",{class:"toast"},[msg]);
   document.body.appendChild(t);
   setTimeout(function(){ t.remove(); }, 2200);
+}
+
+
+// ---- celular: "indique a(s) rede(s) de EA a(s) qual(is) você está vinculado(a)" ----
+function renderVinculosForm(wrap, myId){
+  var sid=currentSession.id;
+  var card=h("div",{class:"card"});
+  card.appendChild(h("h3",{style:"font-size:17px;margin-bottom:6px"},["Indique a(s) rede(s) de EA a(s) qual(is) você está vinculado(a)"]));
+  card.appendChild(h("p",{class:"muted",style:"margin-bottom:10px;font-size:13px"},["Digite parte do nome ou da sigla e escolha na lista. Pode indicar mais de uma. Se a sua rede não aparecer, adicione-a."]));
+  var input=h("input",{type:"text", id:"ofNet", value:draft.net, autocomplete:"off", placeholder:"Ex.: REPEA, Bahia, juventude…", oninput:function(){ draft.net=input.value; refresh(); }});
+  card.appendChild(input);
+  var results=h("div",{});
+  card.appendChild(results);
+  var chosenBox=h("div",{style:"margin-top:14px"});
+  card.appendChild(chosenBox);
+  wrap.appendChild(card);
+
+  function mine(){ return state.memberships.filter(function(m){ return m.participantId===myId; }); }
+  function hasKey(k){ return mine().some(function(m){ return m.key===k; }); }
+
+  function addMembership(key, name, listed){
+    if(hasKey(key)) return;
+    var tmp={id:"tmp-"+key, participantId:myId, key:key, name:name, listed:listed};
+    state.memberships.push(tmp);
+    draft.net=""; input.value="";
+    drawChosen(); refresh();
+    sb.from("oficina_rede_memberships").insert({session_id:sid, participant_id:myId, network_key:key, network_name:name, listed:listed}).then(function(res){
+      if(res.error && String(res.error.code)!=="23505"){
+        state.memberships=state.memberships.filter(function(m){ return m!==tmp; });
+        drawChosen(); refresh(); toast("Não foi possível salvar: "+res.error.message);
+      } else { loadAll(); }
+    });
+  }
+  function removeMembership(m){
+    state.memberships=state.memberships.filter(function(x){ return x!==m; });
+    drawChosen(); refresh();
+    if(String(m.id).indexOf("tmp-")===0) return;
+    sb.from("oficina_rede_memberships").delete().eq("id", m.id).then(function(res){
+      if(res.error){ toast("Não foi possível remover: "+res.error.message); }
+      loadAll();
+    });
+  }
+  function otherNetworks(){   // redes "outras" já digitadas por alguém da sala
+    var seen={}, out=[];
+    state.memberships.forEach(function(m){ if(!m.listed && !seen[m.key]){ seen[m.key]=1; out.push({key:m.key, label:m.name}); } });
+    return out;
+  }
+  function refresh(){
+    results.innerHTML="";
+    var q=normName(input.value);
+    if(q.length<1) return;
+    var pool=REDES_LISTA.map(function(r){ return {key:r.key, label:r.label, nome:r.nome, listed:true}; })
+      .concat(otherNetworks().map(function(o){ return {key:o.key, label:o.label, nome:o.label, listed:false}; }));
+    var hits=pool.filter(function(r){ return !hasKey(r.key) && (normName(r.label).indexOf(q)>=0 || normName(r.nome).indexOf(q)>=0); });
+    hits.sort(function(a,b){
+      var pa=normName(a.label).indexOf(q)===0?0:1, pb=normName(b.label).indexOf(q)===0?0:1;
+      return pa-pb || a.label.localeCompare(b.label);
+    });
+    hits.slice(0,8).forEach(function(r){
+      var kids=[h("b",{},[r.label])];
+      if(normName(r.nome)!==normName(r.label)) kids.push(h("small",{},[r.nome]));
+      results.appendChild(h("button",{class:"net-opt", onclick:function(){ addMembership(r.key, r.label, r.listed); }}, kids));
+    });
+    var raw=input.value.trim().replace(/\s+/g," ");
+    var exact=pool.some(function(r){ return normName(r.label)===q || normName(r.nome)===q; });
+    if(raw.length>=2 && !exact && hits.length<5){
+      results.appendChild(h("button",{class:"net-opt add", onclick:function(){
+        var val=raw, key=normName(val);
+        var known=pool.map(function(r){ return r.label; });
+        var sug=suggestSimilarName(val, known);
+        if(sug){
+          if(confirm("Já existe \""+sug+"\" na lista.\n\nÉ a mesma rede?\n\nOK = sim, é \""+sug+"\"\nCancelar = não, é outra (\""+val+"\")")){
+            var r=pool.filter(function(x){ return x.label===sug; })[0];
+            if(r){ addMembership(r.key, r.label, r.listed); return; }
+          }
+        }
+        addMembership("x:"+key, val, false);
+      }},[h("span",{},["+ Adicionar “"+raw+"” (outra rede)"])]));
+    }
+  }
+  function drawChosen(){
+    chosenBox.innerHTML="";
+    var list=mine();
+    if(!list.length){ chosenBox.appendChild(h("p",{class:"muted",style:"font-size:12px"},["Nenhuma rede indicada ainda."])); return; }
+    chosenBox.appendChild(h("label",{},["Redes que você indicou"]));
+    list.forEach(function(m){
+      var chip=h("span",{class:"chip"},[m.name]);
+      chip.appendChild(h("button",{title:"Remover","aria-label":"Remover "+m.name,onclick:function(){ removeMembership(m); }},["×"]));
+      chosenBox.appendChild(chip);
+    });
+    chosenBox.appendChild(h("p",{class:"muted",style:"font-size:12px;margin-top:10px"},["Pronto! Pode indicar outras ou aguardar o início da próxima etapa."]));
+  }
+  drawChosen(); refresh();
 }
 
 // ---- participant (join) view ----
@@ -730,6 +1160,8 @@ function renderEntrar(code){
     ]));
     return;
   }
+
+  if(state.phase==="vinculos"){ renderVinculosForm(wrap, myId); return; }
 
   // tie form
   var formCard=h("div",{class:"card"});
@@ -824,6 +1256,7 @@ function deleteSession(s, triggerBtn, afterDelete){
   if(triggerBtn) triggerBtn.disabled=true;
   Promise.all([
     sb.from("oficina_rede_ties").delete().eq("session_id", s.id),
+    sb.from("oficina_rede_memberships").delete().eq("session_id", s.id),
     sb.from("oficina_rede_participants").delete().eq("session_id", s.id)
   ]).then(function(results){
     var err=results.find(function(r){return r.error;});
@@ -874,7 +1307,7 @@ function renderSessionPicker(wrap){
   if(sessionsList.length===0){
     listCard.appendChild(h("div",{class:"muted"},["Nenhuma oficina criada ainda."]));
   } else {
-    var phaseLabel={coleta:"Coleta",exercicio:"Exercício",encerrado:"Encerrada"};
+    var phaseLabel={vinculos:"Vínculos",coleta:"Coleta",exercicio:"Exercício",encerrado:"Encerrada"};
     sessionsList.forEach(function(s){
       var row=h("div",{style:"display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.07)"});
       row.appendChild(h("a",{href:"#palco-"+s.code, style:"flex:1;display:flex;justify-content:space-between;align-items:center;gap:10px;text-decoration:none;color:var(--ink)"},[
@@ -907,7 +1340,7 @@ function renderSessionPicker(wrap){
     var code=slugifyCode(rawName);
     if(!code){ toast("Digite um nome com letras ou números"); return; }
     createBtn.disabled=true;
-    sb.from("oficina_rede_sessions").insert({code:code, name:rawName, phase:"coleta"}).then(function(res){
+    sb.from("oficina_rede_sessions").insert({code:code, name:rawName, phase:"vinculos"}).then(function(res){
       createBtn.disabled=false;
       if(res.error){
         if(res.error.code==="23505") toast("Já existe uma oficina com esse nome (código \""+code+"\"). Escolha outro nome.");
@@ -948,6 +1381,10 @@ function renderStage(code){
     return;
   }
 
+  if(state.phase!==lastPhaseSeen){
+    stageTab = state.phase==="vinculos"? "vinc" : (lastPhaseSeen==="vinculos"? "colab" : stageTab);
+    lastPhaseSeen=state.phase;
+  }
   var gFull=buildGraph();
   var inEx = state.phase==="exercicio";
   if(!inEx){ resetSim(); viewMode="declarada"; }
@@ -988,8 +1425,8 @@ function renderStage(code){
     var admin=h("div",{class:"card"});
     admin.appendChild(h("h3",{style:"font-size:15px;margin-bottom:10px"},["Controles do facilitador"]));
     var seg=h("div",{class:"seg"});
-    ["coleta","exercicio","encerrado"].forEach(function(ph){
-      var label={coleta:"Coleta",exercicio:"Exercício",encerrado:"Encerrar"}[ph];
+    ["vinculos","coleta","exercicio","encerrado"].forEach(function(ph){
+      var label={vinculos:"Vínculos",coleta:"Coleta",exercicio:"Exercício",encerrado:"Encerrar"}[ph];
       var b=h("button",{class: state.phase===ph?"active":"", onclick:function(){
         if(state.phase===ph) return; // já está nessa fase
         var previousPhase=currentSession.phase;
@@ -1010,7 +1447,7 @@ function renderStage(code){
     admin.appendChild(h("div",{style:"height:10px"}));
     var row=h("div",{class:"row"});
     var exportBtn=h("button",{class:"btn secondary", onclick:function(){
-      var payload=JSON.stringify({oficina:currentSession, participants:state.participants, ties:state.ties, metricsDeclarada:metricsDecl, metricsSimulada:metricsSimu}, null, 2);
+      var payload=JSON.stringify({oficina:currentSession, participants:state.participants, memberships:state.memberships, ties:state.ties, metricsDeclarada:metricsDecl, metricsSimulada:metricsSimu}, null, 2);
       var blob=new Blob([payload], {type:"application/json"});
       var a=document.createElement("a");
       a.href=URL.createObjectURL(blob);
@@ -1021,6 +1458,7 @@ function renderStage(code){
       if(!confirm("Apagar os participantes e laços DESTA oficina ("+currentSession.code+")? Isso não pode ser desfeito.")) return;
       Promise.all([
         sb.from("oficina_rede_ties").delete().eq("session_id",currentSession.id),
+        sb.from("oficina_rede_memberships").delete().eq("session_id",currentSession.id),
         sb.from("oficina_rede_participants").delete().eq("session_id",currentSession.id)
       ]).then(function(results){
         var err=results.find(function(r){return r.error;});
@@ -1043,6 +1481,30 @@ function renderStage(code){
     admin.appendChild(deleteSessionBtn);
     wrap.appendChild(admin);
   }
+
+  function makeQR(){
+    if(window.QRCode){
+      try{ new QRCode(qrHolder, {text:joinUrl, width:104, height:104, colorDark:"#0B2A45", colorLight:"#ffffff"}); }
+      catch(e){ qrHolder.textContent="QR indisponível"; }
+    } else {
+      qrHolder.style.display="flex"; qrHolder.style.alignItems="center"; qrHolder.style.justifyContent="center";
+      qrHolder.style.color="#0B2A45"; qrHolder.style.fontSize="11px"; qrHolder.textContent="QR indisponível — use o link";
+    }
+
+
+  }
+
+  // ---- abas do palco: rede de colaboração | vínculo com redes de EA ----
+  var tabBar=h("div",{style:"display:flex;align-items:center;gap:10px;margin:16px 0 4px;flex-wrap:wrap"});
+  var tabSeg=h("div",{class:"seg", style:"width:auto"});
+  [["colab","Rede de colaboração"],["vinc","Vínculo com redes de EA"]].forEach(function(p){
+    tabSeg.appendChild(h("button",{class: stageTab===p[0]?"active":"", style:"flex:none;padding:9px 18px", onclick:function(){
+      if(stageTab===p[0]) return; stageTab=p[0]; render();
+    }},[p[1]]));
+  });
+  tabBar.appendChild(tabSeg);
+  wrap.appendChild(tabBar);
+  if(stageTab==="vinc"){ makeQR(); renderVinculosStage(wrap); return; }
 
   // ---- layout do grafo (qualquer pessoa vendo o palco pode trocar — é só exibição) ----
   var layoutBar=h("div",{style:"display:flex;align-items:center;gap:10px;margin:16px 0 10px;flex-wrap:wrap"},[
@@ -1336,14 +1798,7 @@ function renderStage(code){
   grid.insertBefore(graphBox, grid.firstChild);
   grid.appendChild(side);
 
-  // QR code
-  if(window.QRCode){
-    try{ new QRCode(qrHolder, {text:joinUrl, width:104, height:104, colorDark:"#0B2A45", colorLight:"#ffffff"}); }
-    catch(e){ qrHolder.textContent="QR indisponível"; }
-  } else {
-    qrHolder.style.display="flex"; qrHolder.style.alignItems="center"; qrHolder.style.justifyContent="center";
-    qrHolder.style.color="#0B2A45"; qrHolder.style.fontSize="11px"; qrHolder.textContent="QR indisponível — use o link";
-  }
+  makeQR();
 
   drawGraph(graphBox, gDraw, function(key){
     renderNodeInfo(key);
@@ -1724,9 +2179,10 @@ async function loadCore(){
   var res3=await Promise.all([
     sb.from("oficina_rede_participants").select("*").eq("session_id",sid),
     sb.from("oficina_rede_ties").select("*").eq("session_id",sid),
-    sb.from("oficina_rede_sessions").select("*").eq("id",sid).maybeSingle()
+    sb.from("oficina_rede_sessions").select("*").eq("id",sid).maybeSingle(),
+    sb.from("oficina_rede_memberships").select("*").eq("session_id",sid)
   ]);
-  var p=res3[0], t=res3[1], s=res3[2];
+  var p=res3[0], t=res3[1], s=res3[2], mb=res3[3];
   if(!currentSession || currentSession.id!==sid) return; // trocou de oficina durante a consulta
   if(p.error) console.error("participants",p.error);
   else state.participants=p.data.map(function(r){ return {id:r.id, name:r.name}; });
@@ -1735,6 +2191,8 @@ async function loadCore(){
     id:r.id, from:r.from_id, fromName:r.from_name, to:r.to_name,
     external:!!r.external, hypothetical:!!r.hypothetical, createdAt:r.created_at
   }; });
+  if(mb && mb.error) console.error("memberships",mb.error);
+  else if(mb) state.memberships=mb.data.map(function(r){ return {id:r.id, participantId:r.participant_id, key:r.network_key, name:r.network_name, listed:!!r.listed}; });
   if(!s.error && s.data){
     currentSession.phase=s.data.phase||"coleta";
     currentSession.name=s.data.name;
