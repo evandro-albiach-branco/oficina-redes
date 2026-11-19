@@ -79,6 +79,9 @@
   .metric .hint{font-size:11px; color:var(--ink-soft); opacity:.75; margin-top:4px; line-height:1.3}
   .metric.wide{grid-column:1 / -1}
   .join-pill{display:flex; align-items:center; gap:14px}
+  .qr-actions{display:flex; gap:6px; margin-top:8px; flex-wrap:wrap}
+  .qr-actions button{background:rgba(255,255,255,.08); color:var(--ink); border:1px solid rgba(146,235,208,.3); border-radius:8px; padding:5px 10px; font-size:12px; font-family:var(--body); cursor:pointer}
+  .qr-actions button:hover{background:rgba(146,235,208,.18)}
   #qr{background:#fff; padding:10px; border-radius:10px; width:124px; height:124px; flex:none}
   .urltext{font-size:13px; word-break:break-all; color:var(--mint2); font-weight:600}
   .legend{display:flex; gap:16px; font-size:12px; color:var(--ink-soft); flex-wrap:wrap; margin-top:10px}
@@ -1404,9 +1407,54 @@ function renderStage(code){
   var joinUrl=location.origin+location.pathname+"#entrar-"+currentSession.code;
   joinBox.appendChild(h("div",{},[
     h("div",{class:"muted",style:"margin-bottom:4px"},["Entre pelo celular:"]),
-    h("div",{class:"urltext"},[joinUrl])
+    h("div",{class:"urltext"},[joinUrl]),
+    h("div",{class:"qr-actions"},[
+      h("button",{title:"Copia o QR code em alta resolução para colar em slides ou documentos",onclick:function(){ copyQR(); }},["Copiar QR"]),
+      h("button",{title:"Baixa o QR code como imagem PNG de alta resolução",onclick:function(){ downloadQR(); }},["Baixar PNG"]),
+      h("button",{onclick:function(){ copyText(joinUrl, "Link copiado"); }},["Copiar link"])
+    ])
   ]));
   header.appendChild(joinBox);
+
+  // QR em alta resolução (1200 px, com margem branca), gerado sob demanda para o link #entrar desta oficina
+  function qrBlob(){
+    return new Promise(function(resolve,reject){
+      if(!window.QRCode){ reject(new Error("QR indisponível")); return; }
+      var tmp=document.createElement("div"); tmp.style.cssText="position:fixed;left:-9999px;top:0";
+      document.body.appendChild(tmp);
+      try{ new QRCode(tmp,{text:joinUrl, width:1000, height:1000, colorDark:"#000000", colorLight:"#ffffff", correctLevel:QRCode.CorrectLevel.M}); }
+      catch(e){ document.body.removeChild(tmp); reject(e); return; }
+      setTimeout(function(){
+        var src=tmp.querySelector("canvas");
+        if(!src){ document.body.removeChild(tmp); reject(new Error("sem canvas")); return; }
+        var out=document.createElement("canvas"); out.width=1200; out.height=1200;
+        var cx=out.getContext("2d"); cx.fillStyle="#ffffff"; cx.fillRect(0,0,1200,1200);
+        cx.imageSmoothingEnabled=false; cx.drawImage(src,100,100,1000,1000);
+        document.body.removeChild(tmp);
+        out.toBlob(function(b){ b? resolve(b) : reject(new Error("falha ao gerar imagem")); },"image/png");
+      },60);
+    });
+  }
+  function downloadBlob(b){
+    var a=document.createElement("a"); a.href=URL.createObjectURL(b); a.download="qr-entrar-"+currentSession.code+".png";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(a.href); }, 2000);
+  }
+  function downloadQR(){ qrBlob().then(function(b){ downloadBlob(b); toast("QR baixado (PNG 1200 px)"); }).catch(function(e){ toast("Não foi possível gerar o QR: "+e.message); }); }
+  function copyQR(){
+    qrBlob().then(function(b){
+      if(navigator.clipboard && window.ClipboardItem){
+        return navigator.clipboard.write([new ClipboardItem({"image/png":b})]).then(function(){ toast("QR copiado (1200 px). Cole com Ctrl+V"); });
+      }
+      downloadBlob(b); toast("Seu navegador não copia imagens: o QR foi baixado");
+    }).catch(function(e){
+      qrBlob().then(function(b){ downloadBlob(b); toast("Não consegui copiar; o QR foi baixado"); }).catch(function(){ toast("Não foi possível gerar o QR"); });
+    });
+  }
+  function copyText(t,msg){
+    if(navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(function(){ toast(msg); }, function(){ toast("Não consegui copiar"); });
+    else toast("Seu navegador não permite copiar");
+  }
   wrap.appendChild(header);
 
   // ---- controles do facilitador — no topo da página, antes do grafo ----
