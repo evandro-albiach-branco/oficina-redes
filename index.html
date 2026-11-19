@@ -623,7 +623,6 @@ function renderVinculosStage(wrap){
     seg.appendChild(h("button",{class: vincMode===p[0]?"active":"", style:"flex:none;padding:8px 16px", onclick:function(){ if(vincMode===p[0]) return; vincMode=p[0]; render(); }},[p[1]]));
   });
   bar.appendChild(seg);
-  bar.appendChild(h("button",{class:"btn "+(vincShowEmpty?"":"secondary"), style:"width:auto;padding:8px 14px;font-size:13px",onclick:function(){ vincShowEmpty=!vincShowEmpty; render(); }},[(vincShowEmpty?"✓ ":"")+"Redes da lista sem representante"]));
   wrap.appendChild(bar);
 
   var grid=h("div",{class:"stage-grid"});
@@ -643,8 +642,7 @@ function renderVinculosStage(wrap){
     if(hint) kids.push(h("div",{class:"hint"},[hint]));
     return h("div",{class:"metric"+(wide?" wide":"")},kids);
   }
-  grid2.appendChild(met("Redes da lista com gente aqui", present.length+" de "+listedTotal));
-  grid2.appendChild(met("Outras redes citadas", String(others.length)));
+  grid2.appendChild(met("Redes citadas", String(present.length+others.length)));
   grid2.appendChild(met("Pessoas que indicaram", indicated.length+" de "+peopleList.length));
   grid2.appendChild(met("Redes por pessoa (média)", avg? avg.toFixed(1) : "—"));
   grid2.appendChild(met("Pessoas em 2 ou mais redes", String(multi.length), true, "são as que conectam redes entre si"));
@@ -654,13 +652,13 @@ function renderVinculosStage(wrap){
   var leitura=[];
   if(!indicated.length) leitura.push("Ninguém indicou rede ainda. Conforme as pessoas indicarem, o grafo se forma em volta da REBEA.");
   else {
-    leitura.push("Há representantes de "+present.length+" das "+listedTotal+" redes da Facilitação Nacional"+(others.length? ", além de "+others.length+(others.length===1?" outra rede":" outras redes")+" fora da lista" : "")+".");
+    var nCit=present.length+others.length;
+    leitura.push("As pessoas da sala citaram "+nCit+(nCit===1?" rede":" redes")+(others.length? " (sendo "+others.length+(others.length===1?" fora":" fora")+" da lista da Facilitação Nacional)" : "")+".");
     var topNets=netList.filter(function(n){ return n.members.length>0; }).sort(function(a,b){ return b.members.length-a.members.length || a.label.localeCompare(b.label); });
     if(topNets.length) leitura.push("A rede com mais pessoas aqui é "+topNets[0].label+" ("+topNets[0].members.length+(topNets[0].members.length===1?" pessoa":" pessoas")+").");
     if(hubNet.members.length) leitura.push(hubNet.members.length+(hubNet.members.length===1?" pessoa indicou":" pessoas indicaram")+" a própria REBEA.");
     if(multi.length) leitura.push(multi.length+(multi.length===1?" pessoa participa":" pessoas participam")+" de mais de uma rede. São elas que fazem as redes se tocarem; sem elas, esses grupos não teriam ninguém em comum.");
     else leitura.push("Cada pessoa indicou uma única rede até agora: as redes ainda não têm ninguém em comum.");
-    if(absent.length) leitura.push(absent.length+(absent.length===1?" rede da lista não tem":" redes da lista não têm")+" ninguém na sala"+(absent.length<=8? ": "+absent.map(function(n){ return n.label; }).join(", ")+"." : "."));
     if(without.length) leitura.push(without.length+(without.length===1?" pessoa ainda não indicou":" pessoas ainda não indicaram")+" rede.");
   }
   leitura.forEach(function(t){ resumo.appendChild(h("p",{class:"muted",style:"font-size:13px;margin:6px 0;line-height:1.45"},[t])); });
@@ -676,10 +674,6 @@ function renderVinculosStage(wrap){
     if(vincSelected===n.key) it.appendChild(h("div",{class:"sub",style:"color:var(--ink)"},[n.members.map(nameOf).sort(function(a,b){ return a.localeCompare(b); }).join(", ")]));
     redesCard.appendChild(it);
   });
-  if(absent.length){
-    redesCard.appendChild(h("label",{style:"margin-top:12px"},["Sem representante na sala ("+absent.length+")"]));
-    redesCard.appendChild(h("p",{class:"muted",style:"font-size:12.5px;line-height:1.5"},[absent.map(function(n){ return n.label; }).join(" · ")]));
-  }
   panels.appendChild(redesCard);
 
   var pesCard=h("div",{class:"card"});
@@ -710,23 +704,8 @@ function renderVinculosStage(wrap){
   wrap.appendChild(grid);
   grid.appendChild(side);
 
-  drawAffil(graphBox, A, {mode:vincMode, showEmpty:vincShowEmpty, selected:vincSelected, onNet:function(k){ vincSelected=(vincSelected===k? null : k); sideTabMemory="v:redes"; render(); }});
+  drawAffil(graphBox, A, {mode:vincMode, selected:vincSelected, onNet:function(k){ vincSelected=(vincSelected===k? null : k); sideTabMemory="v:redes"; render(); }});
 
-  // legenda dentro do grafo
-  var lg=h("div",{class:"graph-legend"});
-  function lgi(sw,txt){ lg.appendChild(h("span",{},[sw,txt])); }
-  lgi(h("span",{class:"dot",style:"background:#0F3B5F;border:2px solid var(--mint)"}),"REBEA (centro)");
-  Object.keys(REDE_CATS).forEach(function(k){
-    if(k==="outras" && !others.length) return;
-    lgi(h("span",{style:"width:10px;height:10px;border-radius:2px;display:inline-block;background:"+REDE_CATS[k].color}),REDE_CATS[k].label);
-  });
-  if(vincMode==="pessoas"){
-    lgi(h("span",{class:"dot",style:"background:#E6F4FF"}),"pessoa");
-    lgi(h("span",{class:"dot",style:"background:#E6F4FF;box-shadow:0 0 0 2px var(--amber)"}),"pessoa em 2 ou mais redes");
-  } else {
-    lgi(h("span",{class:"lineSwatch",style:"border-color:var(--amber)"}),"pessoas em comum (espessura = quantas)");
-  }
-  graphBox.appendChild(lg);
 }
 
 function drawAffil(container, A, opts){
@@ -746,7 +725,7 @@ function drawAffil(container, A, opts){
   Object.keys(A.nets).forEach(function(k){
     var n=A.nets[k];
     if(n.hub) return;
-    if(n.members.length===0 && !(opts.showEmpty && n.listed)) return;
+    if(n.members.length===0) return;
     var o={id:"n:"+k, type:"net", key:k, label:n.label, full:n.full, cat:n.cat, listed:n.listed, count:n.members.length};
     netNodes[k]=o; nodes.push(o);
     links.push({source:"rebea", target:o.id, kind:n.listed? "hub":"hubx"});
