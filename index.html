@@ -1558,8 +1558,10 @@ function renderStage(code){
   metricsGrid.appendChild(metricEl("Grupos", String(metrics.blocks)));
   metricsGrid.appendChild(metricEl("Densidade", metrics.density.toFixed(2)));
   metricsGrid.appendChild(metricEl("Distância média", metrics.avgDist? metrics.avgDist.toFixed(2):"—"));
-  metricsGrid.appendChild(metricEl("Laços críticos", String(metrics.bridges), false,
-    "laços que, se caíssem, partiriam a rede em mais pedaços"));
+  metricsGrid.appendChild(metricEl("Nós críticos", String(metrics.crit.list.length), false,
+    "pessoas de quem a rede mais depende (veja a aba Críticos)"));
+  metricsGrid.appendChild(metricEl("Laços-ponte", metrics.bridges+" de "+metrics.m, false,
+    "laços cuja queda separaria alguém do resto. Sem ciclos na rede, todo laço é ponte"));
   metricsGrid.appendChild(metricEl("Dependência", metrics.centralization.toFixed(2), true,
     "quanto a estrutura da rede depende de poucas pessoas centrais, em vez de estar distribuída"));
   metricsGrid.appendChild(metricEl("Laços hipotéticos registrados", String(hypTotal), true, inEx? "formam a rede simulada" : "aparecem na fase Exercício"));
@@ -1589,7 +1591,7 @@ function renderStage(code){
       ["Status", d.selfJoined? "Na sala (confirmou pelo próprio celular)" : (d.inRoom? "Na sala (indicado por outra pessoa)" : "Pessoa de fora")],
       ["Laços", String(d.degree)],
       ["Grupo", d.compSize? (d.isGiant? "Maior grupo ("+d.compSize+" pessoas)" : "Grupo de "+d.compSize+(d.compSize>1?" pessoas":" pessoa")) : "—"],
-      ["Laços críticos aqui", String(d.bridgeDeg)],
+      ["Laços-ponte aqui", String(d.bridgeDeg)],
       ["Laços externos declarados", String(d.externalCount)]
     ];
     rows.forEach(function(r){
@@ -1688,7 +1690,7 @@ function renderStage(code){
       ["Maior grupo", metricsDecl.giantSize, metricsSimu.giantSize, 0, false],
       ["Densidade", metricsDecl.density, metricsSimu.density, 2, false],
       ["Distância média", metricsDecl.avgDist, metricsSimu.avgDist, 2, true],
-      ["Laços críticos", metricsDecl.bridges, metricsSimu.bridges, 0, true],
+      ["Laços-ponte", metricsDecl.bridges, metricsSimu.bridges, 0, true],
       ["Dependência", metricsDecl.centralization, metricsSimu.centralization, 2, true]
     ];
     rows4.forEach(function(r){
