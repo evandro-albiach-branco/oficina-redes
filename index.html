@@ -324,6 +324,7 @@ var REDE_CATS={
   nordeste:{label:"Territoriais · Nordeste", color:"#FF9B6B"},
   centro:{label:"Territoriais · Centro-Oeste", color:"#D58BFF"},
   sul:{label:"Territoriais · Sul", color:"#FF7BA9"},
+  rebea:{label:"REBEA", color:"#FFFFFF"},
   outras:{label:"Outras redes (fora da lista)", color:"#B9CBDD"}
 };
 var REDES_LISTA=[
@@ -362,6 +363,7 @@ var REDES_LISTA=[
   ["Rede Araucarias","Rede Araucarias","sul"],
   ["Rede Linha Ecológica","Rede Linha Ecológica","sul"]
 ].map(function(r){ return {key:normName(r[0]), label:r[0], nome:r[1], cat:r[2]}; });
+var REBEA_ITEM={key:"rebea", label:"REBEA", nome:"Rede Brasileira de Educação Ambiental"};   // nó central; pessoas podem se vincular a ela diretamente
 var REDE_BY_KEY={}; REDES_LISTA.forEach(function(r){ REDE_BY_KEY[r.key]=r; });
 
 // ---------- nós críticos ----------
@@ -580,31 +582,34 @@ function buildScenario(gFull){
 // ---- palco: vínculo com redes de EA (REBEA no centro, redes e pessoas ao redor) ----
 function buildAffil(){
   var nets={}, people={};
+  nets["rebea"]={key:"rebea", label:"REBEA", full:REBEA_ITEM.nome, cat:"rebea", listed:true, hub:true, members:[]};
   REDES_LISTA.forEach(function(r){ nets[r.key]={key:r.key, label:r.label, full:r.nome, cat:r.cat, listed:true, members:[]}; });
-  state.participants.forEach(function(p){ people[p.id]={id:p.id, name:p.name, nets:[]}; });
+  state.participants.forEach(function(p){ people[p.id]={id:p.id, name:p.name, nets:[], plain:[]}; });
   state.memberships.forEach(function(m){
     var pe=people[m.participantId]; if(!pe) return;
     var n=nets[m.key];
     if(!n){ n=nets[m.key]={key:m.key, label:m.name, full:m.name, cat:"outras", listed:false, members:[]}; }
-    if(n.members.indexOf(pe.id)<0){ n.members.push(pe.id); pe.nets.push(m.key); }
+    if(n.members.indexOf(pe.id)<0){ n.members.push(pe.id); pe.nets.push(m.key); if(!n.hub) pe.plain.push(m.key); }
   });
   return {nets:nets, people:people};
 }
 
 function renderVinculosStage(wrap){
   var A=buildAffil();
-  var netList=Object.keys(A.nets).map(function(k){ return A.nets[k]; });
+  var netList=Object.keys(A.nets).map(function(k){ return A.nets[k]; }).filter(function(n){ return !n.hub; });
+  var hubNet=A.nets["rebea"];
   var peopleList=Object.keys(A.people).map(function(k){ return A.people[k]; });
   var listedTotal=REDES_LISTA.length;
   var present=netList.filter(function(n){ return n.listed && n.members.length>0; });
   var others=netList.filter(function(n){ return !n.listed && n.members.length>0; });
   var indicated=peopleList.filter(function(p){ return p.nets.length>0; });
-  var multi=indicated.filter(function(p){ return p.nets.length>1; });
+  var multi=indicated.filter(function(p){ return p.plain.length>1; });
   var without=peopleList.filter(function(p){ return p.nets.length===0; });
-  var totalLinks=indicated.reduce(function(a,p){ return a+p.nets.length; },0);
-  var avg=indicated.length? totalLinks/indicated.length : 0;
+  var withPlain=indicated.filter(function(p){ return p.plain.length>0; });
+  var totalLinks=withPlain.reduce(function(a,p){ return a+p.plain.length; },0);
+  var avg=withPlain.length? totalLinks/withPlain.length : 0;
   var absent=netList.filter(function(n){ return n.listed && n.members.length===0; });
-  var byMembers=netList.filter(function(n){ return n.members.length>0; }).sort(function(a,b){ return b.members.length-a.members.length || a.label.localeCompare(b.label); });
+  var byMembers=netList.concat(hubNet).filter(function(n){ return n.members.length>0; }).sort(function(a,b){ return b.members.length-a.members.length || a.label.localeCompare(b.label); });
   var labelOf=function(k){ return A.nets[k]? A.nets[k].label : k; };
   var nameOf=function(id){ return A.people[id]? A.people[id].name : id; };
   if(vincSelected && !A.nets[vincSelected]) vincSelected=null;
@@ -650,7 +655,9 @@ function renderVinculosStage(wrap){
   if(!indicated.length) leitura.push("Ninguém indicou rede ainda. Conforme as pessoas indicarem, o grafo se forma em volta da REBEA.");
   else {
     leitura.push("Há representantes de "+present.length+" das "+listedTotal+" redes da Facilitação Nacional"+(others.length? ", além de "+others.length+(others.length===1?" outra rede":" outras redes")+" fora da lista" : "")+".");
-    if(byMembers.length) leitura.push("A rede com mais pessoas aqui é "+byMembers[0].label+" ("+byMembers[0].members.length+(byMembers[0].members.length===1?" pessoa":" pessoas")+").");
+    var topNets=netList.filter(function(n){ return n.members.length>0; }).sort(function(a,b){ return b.members.length-a.members.length || a.label.localeCompare(b.label); });
+    if(topNets.length) leitura.push("A rede com mais pessoas aqui é "+topNets[0].label+" ("+topNets[0].members.length+(topNets[0].members.length===1?" pessoa":" pessoas")+").");
+    if(hubNet.members.length) leitura.push(hubNet.members.length+(hubNet.members.length===1?" pessoa indicou":" pessoas indicaram")+" a própria REBEA.");
     if(multi.length) leitura.push(multi.length+(multi.length===1?" pessoa participa":" pessoas participam")+" de mais de uma rede. São elas que fazem as redes se tocarem; sem elas, esses grupos não teriam ninguém em comum.");
     else leitura.push("Cada pessoa indicou uma única rede até agora: as redes ainda não têm ninguém em comum.");
     if(absent.length) leitura.push(absent.length+(absent.length===1?" rede da lista não tem":" redes da lista não têm")+" ninguém na sala"+(absent.length<=8? ": "+absent.map(function(n){ return n.label; }).join(", ")+"." : "."));
@@ -679,7 +686,7 @@ function renderVinculosStage(wrap){
   pesCard.appendChild(h("h3",{style:"font-size:15px;margin-bottom:10px"},["Pessoas"]));
   pesCard.appendChild(h("label",{},["Em 2 ou mais redes ("+multi.length+")"]));
   if(!multi.length) pesCard.appendChild(h("p",{class:"muted",style:"font-size:12.5px"},["Ninguém ainda."]));
-  multi.sort(function(a,b){ return b.nets.length-a.nets.length || a.name.localeCompare(b.name); }).forEach(function(p){
+  multi.sort(function(a,b){ return b.plain.length-a.plain.length || a.name.localeCompare(b.name); }).forEach(function(p){
     pesCard.appendChild(h("div",{style:"padding:6px 0;border-bottom:1px solid rgba(146,235,208,.08);font-size:13px"},[
       h("div",{style:"font-weight:600"},[p.name]), h("div",{class:"muted",style:"font-size:12px"},[p.nets.map(labelOf).join(" · ")])
     ]));
@@ -735,8 +742,10 @@ function drawAffil(container, A, opts){
   var rebea={id:"rebea", type:"rebea", label:"REBEA", fx:w/2, fy:hgt/2, x:w/2, y:hgt/2};
   nodes.push(rebea);
   var netNodes={};
+  netNodes["rebea"]=rebea;
   Object.keys(A.nets).forEach(function(k){
     var n=A.nets[k];
+    if(n.hub) return;
     if(n.members.length===0 && !(opts.showEmpty && n.listed)) return;
     var o={id:"n:"+k, type:"net", key:k, label:n.label, full:n.full, cat:n.cat, listed:n.listed, count:n.members.length};
     netNodes[k]=o; nodes.push(o);
@@ -747,14 +756,14 @@ function drawAffil(container, A, opts){
   if(peopleMode){
     Object.keys(A.people).forEach(function(id){
       var p=A.people[id]; if(!p.nets.length) return;
-      var o={id:"p:"+id, type:"person", pid:id, label:p.name, nets:p.nets, multi:p.nets.length>1};
+      var o={id:"p:"+id, type:"person", pid:id, label:p.name, nets:p.nets, multi:p.plain.length>1};
       nodes.push(o);
-      p.nets.forEach(function(k){ if(netNodes[k]) links.push({source:o.id, target:"n:"+k, kind:"member"}); });
+      p.nets.forEach(function(k){ if(netNodes[k]) links.push({source:o.id, target:(k==="rebea"?"rebea":"n:"+k), kind:"member"}); });
     });
   } else {
     var pair={};
     Object.keys(A.people).forEach(function(id){
-      var ns=A.people[id].nets;
+      var ns=A.people[id].plain;
       for(var i=0;i<ns.length;i++) for(var j=i+1;j<ns.length;j++){
         var a=ns[i], b=ns[j]; if(a>b){ var t=a; a=b; b=t; }
         pair[a+"|"+b]=(pair[a+"|"+b]||0)+1;
@@ -795,16 +804,18 @@ function drawAffil(container, A, opts){
       var base = d.kind==="member"? .55 : (d.kind==="shared"? .8 : .28);
       if(sel){
         var s=typeof d.source==="object"? d.source : {id:d.source}, t=typeof d.target==="object"? d.target : {id:d.target};
-        var on = (s.id==="n:"+sel || t.id==="n:"+sel);
+        var hid=(sel==="rebea"?"rebea":"n:"+sel); var on = (s.id===hid || t.id===hid);
         return on? .95 : .06;
       }
       return base;
     });
-  var node=viewport.append("g").selectAll("g").data(nodes).enter().append("g").style("cursor", function(d){ return d.type==="net"? "pointer":"grab"; });
+  var node=viewport.append("g").selectAll("g").data(nodes).enter().append("g").style("cursor", function(d){ return (d.type==="net"||d.type==="rebea")? "pointer":"grab"; });
   node.each(function(d){
     var g=d3.select(this);
     if(d.type==="rebea"){
-      g.append("circle").attr("r",32).attr("fill","#0F3B5F").attr("stroke","#5FE0C6").attr("stroke-width",3);
+      var hubN=A.nets["rebea"].members.length;
+      g.append("circle").attr("r",32).attr("fill","#0F3B5F").attr("stroke", sel==="rebea"? "#FFFFFF":"#5FE0C6").attr("stroke-width",3);
+      g.append("title").text("REBEA · "+A.nets["rebea"].full+(hubN? " · "+hubN+(hubN===1?" pessoa vinculada":" pessoas vinculadas") : ""));
       g.append("text").text("REBEA").attr("text-anchor","middle").attr("dy","0.35em").attr("fill","#fff").attr("font-family","Poppins").attr("font-weight","700").attr("font-size","13px").style("pointer-events","none");
     } else if(d.type==="net"){
       var r=rOf(d), col=REDE_CATS[d.cat].color;
@@ -827,7 +838,7 @@ function drawAffil(container, A, opts){
       g.append("title").text(d.label+" · "+d.nets.map(function(k){ return A.nets[k]? A.nets[k].label : k; }).join(", "));
     }
   });
-  node.on("click", function(event,d){ if(d.__dragged){ d.__dragged=false; return; } if(d.type==="net" && opts.onNet){ event.stopPropagation(); opts.onNet(d.key); } });
+  node.on("click", function(event,d){ if(d.__dragged){ d.__dragged=false; return; } if((d.type==="net"||d.type==="rebea") && opts.onNet){ event.stopPropagation(); opts.onNet(d.type==="rebea"? "rebea" : d.key); } });
   var zoom=d3.zoom().scaleExtent([0.3,4]).on("zoom", function(ev){ viewport.attr("transform", ev.transform); });
   svg.call(zoom); svg.on("dblclick.zoom", null);
   svg.on("dblclick", function(){ svg.transition().duration(300).call(zoom.transform, d3.zoomIdentity); });
@@ -1030,11 +1041,12 @@ function renderVinculosForm(wrap, myId){
     results.innerHTML="";
     var q=normName(input.value);
     if(q.length<1) return;
-    var pool=REDES_LISTA.map(function(r){ return {key:r.key, label:r.label, nome:r.nome, listed:true}; })
+    var pool=[{key:REBEA_ITEM.key, label:REBEA_ITEM.label, nome:REBEA_ITEM.nome, listed:true}].concat(REDES_LISTA.map(function(r){ return {key:r.key, label:r.label, nome:r.nome, listed:true}; }))
       .concat(otherNetworks().map(function(o){ return {key:o.key, label:o.label, nome:o.label, listed:false}; }));
     var hits=pool.filter(function(r){ return !hasKey(r.key) && (normName(r.label).indexOf(q)>=0 || normName(r.nome).indexOf(q)>=0); });
     hits.sort(function(a,b){
       var pa=normName(a.label).indexOf(q)===0?0:1, pb=normName(b.label).indexOf(q)===0?0:1;
+      if(a.key==="rebea") return -1; if(b.key==="rebea") return 1;
       return pa-pb || a.label.localeCompare(b.label);
     });
     hits.slice(0,8).forEach(function(r){
